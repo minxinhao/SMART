@@ -15,7 +15,9 @@
 #include <set>
 #include <iostream>
 
-
+#define TREE_ENABLE_WRITE_COMBINING
+#define TREE_ENABLE_CACHE
+#define TREE_ENABLE_READ_DELEGATION
 /*
   Workloads
 */

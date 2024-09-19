@@ -21,7 +21,62 @@ enum HandoverType {
 };
 
 
+// 个人认为，acquire/release_lock中对r/w_lock和对current/ticket faa的使用还有一定的商榷空间
 struct LocalLockNode {
+  // window_start代表当前是否有正在进行的read_window或write_window
+  
+  // 每次read/write操作，使用cas来判断当前unique_read_key/unique_write_key是否为空
+  // 为空则写入当前要read/write的key
+  // 如果cas失败且当前unique_read_key/unique_write_key与要read/write的key不相同
+  // 则返回代理失败和存在冲突key(上锁失败)，否则对cas成功的返回代理失败和不存在冲突key(成功上锁)
+
+  // 对操作同一个key的不同线程，对read/write ticket进行faa，仅当current增长到ticket时
+  // 该线程进入unque_key的检查。这样使得对同一个key的操作顺序进行。
+  // 第一个faa成功的线程成为winner，其ticket和current相同，其他所有线程成为follower，
+  // 在acquire_local_read/write_lock处被ticket=current的判断阻塞
+  
+  // 初始时read_window为0，winner将read_handover标志为false，
+  // 这样在winner执行完search操作进入release_local_read_lock中时，通过read_handover其可以知道自己时winner，设置node中read_handover的result
+  // 同时将window_start和read_window/write_window进行设置。（这里可以阻塞并发write的出现吗？等我看完write_lock相关的）
+  // 然后根据是否有follower,winner设置node的read_handover
+  // 如果不存在follwer则清空unique_read_key
+  // 最后winner将read_window--，同时对read_current faa
+  // 然后其他follower依次进入release_local_read_lock（这里牺牲了很多并发性，follower的read都是可以并发的）
+  // follower只需要读取read_handover的result，然后更新read_handover（是否是最后一个follower，如果是则设置read_handover为false），并faa current。
+
+
+  // write lock与read lock完全一致
+  // 现在不理解的地方在于，这不就search/write同时在进行吗
+  // 理解了。
+  // read和write并发竞争window start
+  // 竞争成功者设置read window和write window
+  // 分别设置为此刻的write follower队列长度和read follower队列长度
+  // 这里有一个问题，就是存在线程，在等待ticket对应的current
+  // 然后设置window_start的线程并没有同步到其ticket，也就是其不在read_window对应的长度中
+  // 然而起仍然执行read_handover，并且仍然能够在release local read lock中获取handover的result
+  // 那read_window的意义是什么呢？
+  
+  // SMART需要的是写代理的线程返回后，不会进入先于当前写代理的读代理
+  // 而一个线程成为读写代理的条件是
+  // node.read_handover/write_handover = false;
+  // 两者当read_window/write_window等于0时，或最后一个follower在release lock中进行了更新
+  // 
+
+  // get了
+  // write/read window设置为更新window start时读到的read/write ticket - read/write current
+  // 标识了当前follower队列的长度。而错过window start节点进入follower队列的线程，虽然更新了ticket
+  // 但是在acquire lock中，其按顺序进入对write/read window的检查区域后
+  // 会发现write/read window已经减少到0，导致其无法被读写代理
+  // 因此在一个线程提交了写代理之后，其读访问不会访问到早于写代理的读代理。
+  // 证明：如果遇见了读代理早于写代理，这两者的window start是同一时间，XXX。大概是这个意思。
+  // 反正就是解决了本地读写时，本地读不会读到本地写之前的数据。
+  // 然而对于不同的client上的线程，一个线程之内的因果一致性能够保证吗？
+  // 初始(x=0,y=0) 
+  // client 0的线程a，write x->1 , write y->1.
+  // client 0的x,y分别被两个写代理，且y在前，x在后
+  // client 1则会读到x=0,y=1
+  
+
   // read waiting queue
   std::atomic<uint8_t> read_current;
   std::atomic<uint8_t> read_ticket;
@@ -35,10 +90,12 @@ struct LocalLockNode {
   /* ----- auxiliary variables for simplicity  TODO: dynamic allocate ----- */
   // identical time window start time
   std::atomic<bool> window_start;
-  std::atomic<uint8_t> read_window;
+  // read_window/write_window代表每个window中允许进入的client次数
+  // 每个
+  std::atomic<uint8_t> read_window; 
   std::atomic<uint8_t> write_window;
-  std::mutex r_lock;
-  std::mutex w_lock;
+  std::mutex r_lock; // 保护对read_window read_current的修改
+  std::mutex w_lock; // 保护对write_window write_current的修改
 
   // hash conflict
   std::atomic<Key*> unique_read_key;
@@ -70,6 +127,7 @@ public:
   LocalLockTable() {}
 
   // read-delegation
+  // 返回值：<是否被代理，是否成功上锁/存在冲突key>
   std::pair<bool, bool> acquire_local_read_lock(const Key& k, CoroQueue *waiting_queue = nullptr, CoroContext *cxt = nullptr, int coro_id = 0);
   void release_local_read_lock(const Key& k, std::pair<bool, bool> acquire_ret, bool& res, Value& ret_value);
 
@@ -100,6 +158,9 @@ public:
 
 private:
   Hash hasher;
+  // sizeof(LocalLockNode) = 192
+  // define::kLocalLockNum = 4194304
+  // 这个锁表一共消耗 ： 192 * 4194304 = 768 MB, 这个开销巨大
   LocalLockNode local_locks[define::kLocalLockNum];
 };
 
@@ -121,6 +182,10 @@ inline std::pair<bool, bool> LocalLockTable::acquire_local_read_lock(const Key& 
   uint8_t ticket = node.read_ticket.fetch_add(1);  // acquire local lock
   uint8_t current = node.read_current.load(std::memory_order_relaxed);
 
+  // 理解了一下，这里采用ticket + current的加锁方式
+  // 尝试上锁时对read_ticket进行faa，保留获取faa之前的值
+  // 然后load read_current的值，如果read_current的值和保存的read_ticket旧值相同
+  // 说明在ticket faa和current load之间没有并发的acquire local read ticket
   while (ticket != current) { // lock failed
     if (cxt != nullptr) {
       waiting_queue->push(std::make_pair(coro_id, [=, &node](){
@@ -130,11 +195,14 @@ inline std::pair<bool, bool> LocalLockTable::acquire_local_read_lock(const Key& 
     }
     current = node.read_current.load(std::memory_order_relaxed);
   }
+
+  // 如果unique_read_key已经被其他线程修改
   unique_key = node.unique_read_key.load();
   if (!unique_key || *unique_key != k) {  // conflict keys
     if (node.read_window) {
       -- node.read_window;
       if (!node.read_window && !node.write_window) {
+        // node的read window为零，同时不存在write window
         node.window_start = false;
       }
     }
@@ -207,7 +275,7 @@ inline std::pair<bool, bool> LocalLockTable::acquire_local_write_lock(const Key&
     delete new_key;
     if (*unique_key != k) {  // conflict keys
       return std::make_pair(false, true);
-    }
+    } 
   }
 
   node.wc_lock.lock();
@@ -217,6 +285,12 @@ inline std::pair<bool, bool> LocalLockTable::acquire_local_write_lock(const Key&
   uint8_t ticket = node.write_ticket.fetch_add(1);  // acquire local lock
   uint8_t current = node.write_current.load(std::memory_order_relaxed);
 
+  // 如果还有之前对ticket进行了faa的client，没有设置完write_window等信息，则current会落后
+  // 问题：不会出现current比ticket超前而导致死循环吗？
+  // 不会出现这种问题：进入到这里，保证了是cas一个空的unique_write_key.
+  // 保证不存在并发的lock操作。
+  // 所有follower被阻塞在此，知道winner完成release
+  // follower按照ticket顺序进入
   while (ticket != current) { // lock failed
     if (cxt != nullptr) {
       waiting_queue->push(std::make_pair(coro_id, [=, &node](){
@@ -226,6 +300,10 @@ inline std::pair<bool, bool> LocalLockTable::acquire_local_write_lock(const Key&
     }
     current = node.write_current.load(std::memory_order_relaxed);
   }
+
+  // 通过ticket和current，保证了在一个key上的操作是顺序的一个一个进入下面的check的
+  // 有其他线程重新修改了unique_write_key，why？
+  // 是因为前面的cas失败，但是发现是同一个key，在尝试进行handover的过程中发现unique write_key发生了改变。
   unique_key = node.unique_write_key.load();
   if (!unique_key || *unique_key != k) {  // conflict keys
     if (node.write_window) {
@@ -238,6 +316,7 @@ inline std::pair<bool, bool> LocalLockTable::acquire_local_write_lock(const Key&
     node.write_current.fetch_add(1);
     return std::make_pair(false, true);
   }
+  // follower队列为空
   if (!node.write_window) {
     node.write_handover = false;
   }
