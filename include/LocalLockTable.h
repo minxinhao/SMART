@@ -138,12 +138,14 @@ public:
 
   /* ---- baseline ---- */
   // lock-handover
+  // in_place_update_leaf调用
   bool acquire_local_lock(const GlobalAddress& addr, CoroQueue *waiting_queue = nullptr, CoroContext *cxt = nullptr, int coro_id = 0);
   using RemoteFunc = std::function<void (const GlobalAddress &)>;
   void release_local_lock(const GlobalAddress& addr, RemoteFunc unlock_func);
   void release_local_lock(const GlobalAddress& addr, RemoteFunc unlock_func, RemoteFunc write_without_unlock, RemoteFunc write_and_unlock);
 
   // cas-handover
+  // out_of_place_update_leaf调用
   bool acquire_local_lock(const Key& k, CoroQueue *waiting_queue = nullptr, CoroContext *cxt = nullptr, int coro_id = 0);
   void release_local_lock(const Key& k, bool& res, InternalEntry& ret_p);
 
@@ -377,6 +379,10 @@ inline void LocalLockTable::release_local_write_lock(const Key& k, std::pair<boo
 }
 
 // lock-handover
+// in_place_update_leaf调用
+// 获取write_ticket，并等待current
+// 代理负责设置unique_addr
+// 返回是否能被代理以及unique addr是否与addr相等
 inline bool LocalLockTable::acquire_local_lock(const GlobalAddress& addr, CoroQueue *waiting_queue, CoroContext *cxt, int coro_id) {
   auto &node = local_locks[hasher.get_hashed_lock_index(addr)];
 
@@ -403,6 +409,12 @@ inline bool LocalLockTable::acquire_local_lock(const GlobalAddress& addr, CoroQu
 }
 
 // lock-handover
+// in_place_update_leaf调用
+// 读取ticket和current设置write_handover
+// 对handover_cnt进行++并判断是否超出上限
+// winner重置handover_cnt
+// 如果unique_addr和传入的addr不相同，则对addr进行unlock
+// 如果不存在被写代理的follower，对unique_addr进行unlock
 inline void LocalLockTable::release_local_lock(const GlobalAddress& addr, RemoteFunc unlock_func) {
   auto &node = local_locks[hasher.get_hashed_lock_index(addr)];
 
@@ -466,6 +478,7 @@ inline void LocalLockTable::release_local_lock(const GlobalAddress& addr, Remote
 }
 
 // cas-handover
+// out_of_place_update_leaf调用
 inline bool LocalLockTable::acquire_local_lock(const Key& k, CoroQueue *waiting_queue, CoroContext *cxt, int coro_id) {
   auto &node = local_locks[hasher.get_hashed_lock_index(k)];
 
@@ -495,6 +508,7 @@ inline bool LocalLockTable::acquire_local_lock(const Key& k, CoroQueue *waiting_
 }
 
 // cas-handover
+// out_of_place_update_leaf调用
 inline void LocalLockTable::release_local_lock(const Key& k, bool& res, InternalEntry& ret_p) {
   auto &node = local_locks[hasher.get_hashed_lock_index(k)];
 

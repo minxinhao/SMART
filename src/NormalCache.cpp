@@ -34,6 +34,7 @@ void NormalCache::_insert(const CacheKey& byte_array, CacheEntry* new_entry) {
   }
   auto old_entry = (CacheEntry *)cache_map[byte_array];
 
+  // 个人觉得这一块有点混乱。并发性能可能比rocksdb的shard cache好点吧。
   if (__sync_bool_compare_and_swap(&(cache_map[byte_array]), old_entry, new_entry)) {
     free_size.fetch_add(-sizeof(CacheEntry*) - new_entry->content_size());
     if (old_entry) {

@@ -14,6 +14,7 @@
 #include <atomic>
 #include <stack>
 
+#define CACHE_ENABLE_ART
 
 struct CacheNodeValue {
   volatile CacheEntry* cache_entry;

@@ -16,8 +16,12 @@
 #include <iostream>
 
 #define TREE_ENABLE_WRITE_COMBINING
-#define TREE_ENABLE_CACHE
 #define TREE_ENABLE_READ_DELEGATION
+#define TREE_ENABLE_CACHE
+#define TREE_ENABLE_EMBEDDING_LOCK
+#define TREE_TEST_HOCL_HANDOVER
+#define TREE_ENABLE_IN_PLACE_UPDATE
+
 /*
   Workloads
 */
@@ -60,6 +64,7 @@ enum {
 
 class Tree {
 public:
+  // 目前来看，这里设置的tree_id，是暗示SMART也是按照分片来存的吗？
   Tree(DSM *dsm, uint16_t tree_id = 0);
 
   using WorkFunc = std::function<void (Tree *, const Request&, CoroContext *, int)>;

@@ -59,6 +59,7 @@ Tree::Tree(DSM *dsm, uint16_t tree_id) : dsm(dsm), tree_id(tree_id) {
   if (dsm->getMyNodeID() == 0 && root_ptr != InternalEntry::Null()) {
     auto cas_buffer = (dsm->get_rbuf(0)).get_cas_buffer();
 retry:
+    // 这里会存在并发设置（reset）root_ptr的情况吗？
     bool res = dsm->cas_sync(root_ptr_ptr, (uint64_t)root_ptr, (uint64_t)InternalEntry::Null(), cas_buffer);
     if (!res && (root_ptr = *(InternalEntry *)cas_buffer) != InternalEntry::Null()) {
       goto retry;
@@ -69,6 +70,7 @@ retry:
 
 GlobalAddress Tree::get_root_ptr_ptr() {
   GlobalAddress addr;
+  // 对这里的疑问是，这样tree没有很好的在memory node之间分散了。root node固定在node 0.
   addr.nodeID = 0;
   addr.offset = define::kRootPointerStoreOffest + sizeof(GlobalAddress) * tree_id;
   return addr;
@@ -403,7 +405,10 @@ insert_finish:
   return;
 }
 
-
+// read_sync读取leaf_addr指定的leaf node
+// 如果reverse_ptr 不是p_ptr，使用cas（而非cas_sync）更新reverse ptr
+// 对非valid的leaf（deleted）返回false
+// 对非一致的leaf重复readf
 bool Tree::read_leaf(const GlobalAddress &leaf_addr, char *leaf_buffer, int leaf_size, const GlobalAddress &p_ptr, bool from_cache, CoroContext *cxt, int coro_id) {
   try_read_leaf[dsm->getMyThreadID()] ++;
 re_read:
@@ -427,11 +432,22 @@ re_read:
   return true;
 }
 
-
+// 使用写代理，尝试获取本地其他线程获取的leaf的lock。将leaf写入到远端。
 void Tree::in_place_update_leaf(const Key &k, Value &v, const GlobalAddress &leaf_addr, Leaf* leaf,
                                CoroContext *cxt, int coro_id) {
 #ifdef TREE_ENABLE_EMBEDDING_LOCK
+  // STRUCT_OFFSET(Leaf, lock_byte) = 8(reverse ptr) + 1(valid+padd) + 8(checksum) + 8(key) + 8(value);
+  // STRUCT_OFFSET(Leaf, lock_byte) = 33
+  // ROUND_DOWN(x,n) = ((x) & ~((1<<(n)) - 1)) ; 去除低于n位的内容
+  // (1<<(n); (1<<(n)) - 1; ~((1<<(n)) - 1);
+  // ((1<<(3)) - 1) = 7 ; ~((1<<(3)) - 1);
+  // ROUND_DOWN(33,3) = ((33) & ~((1<<(3)) - 1)) =  32
+  // 我的理解，这里是按照8 bytes对齐？
   static const uint64_t lock_cas_offset = ROUND_DOWN(STRUCT_OFFSET(Leaf, lock_byte), 3);
+  // STRUCT_OFFSET(Leaf, lock_byte)  = 33
+  // lock_cas_offset = 32
+  // (STRUCT_OFFSET(Leaf, lock_byte) - lock_cas_offset) = 1 ; 也就是lock在这个8 bytes的第1个bytes
+  // * 8  = bits数； 1 << bits数，等于这个8bytes中，lock所在bits的mask
   static const uint64_t lock_mask       = 1UL << ((STRUCT_OFFSET(Leaf, lock_byte) - lock_cas_offset) * 8);
 #endif
 
@@ -440,6 +456,10 @@ void Tree::in_place_update_leaf(const Key &k, Value &v, const GlobalAddress &lea
   // lock function
   auto acquire_lock = [=](const GlobalAddress &unique_leaf_addr) {
 #ifdef TREE_ENABLE_EMBEDDING_LOCK
+    // 向Leaf bit坐在的地址进行cas
+    // 这里同样有个问题，cas的作用域是8bytes，lock在leaf尾端，导致会越界访问
+    // 如果去掉这里的mask可能有正确性问题
+    // 需要在alloc的时候在尾部预留足够空间
     return dsm->cas_mask_sync(GADD(unique_leaf_addr, lock_cas_offset), 0UL, ~0UL, cas_buffer, lock_mask, cxt);
 #else
     GlobalAddress lock_addr;
@@ -636,11 +656,11 @@ void Tree::unlock_node(const GlobalAddress &node_addr, CoroContext *cxt, int cor
 }
 #endif
 
-// 如果leaf_addr为空，说明此leaf未写入到过远端
-// 为Leaf分配远端空间，并写入到远端，等待写入完成
+// 如果leaf_addr为空，说明此leaf未写入到过远端，为Leaf分配远端空间，并写入到远端，等待写入完成
 // 如果该Leaf在远端已经有空间，则先更新其rev_ptr字段为e_ptr(父节点指针)
 // 更新e_ptr，cas写入新的partial_key和leaf_addr
 // 返回cas更新e_ptr指针的结果
+// depth没有被使用到，node_addr没有被使用到（看着就奇怪，node_addr就是和e_ptr重合的字段）。
 bool Tree::out_of_place_write_leaf(const Key &k, Value &v, int depth, GlobalAddress& leaf_addr, uint8_t partial_key,
                                    const GlobalAddress &e_ptr, const InternalEntry &old_e, const GlobalAddress& node_addr, uint64_t *ret_buffer,
                                    CoroContext *cxt, int coro_id) {
@@ -708,6 +728,9 @@ bool Tree::read_node(InternalEntry &p, bool& type_correct, char *node_buffer, co
 bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddress& leaf_addr, int partial_len, uint8_t diff_partial,
                                    const GlobalAddress &e_ptr, const InternalEntry &old_e, const GlobalAddress& node_addr,
                                    uint64_t *ret_buffer, CoroContext *cxt, int coro_id) {
+  // 在header中，partial数组部分是6 bytes，也就是最多只能存放6段partial。
+  // hPartialLenMax = 6， 额外+1是因为尾部有一个额外的+1，对与刚好6段的也进行兼容。
+  // 生成的这些internal node是顺序的上下级关系。
   int new_node_num = partial_len / (define::hPartialLenMax + 1) + 1;
   auto leaf_unwrite = (leaf_addr == GlobalAddress::Null());
 
