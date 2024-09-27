@@ -68,18 +68,18 @@ static inline void fillSgeWr(ibv_sge &sg, ibv_recv_wr &wr, uint64_t source,
   wr.num_sge = 1;
 }
 
-static inline void fillSgeWr(ibv_sge &sg, ibv_exp_send_wr &wr, uint64_t source,
-                             uint64_t size, uint32_t lkey) {
-  memset(&sg, 0, sizeof(sg));
-  sg.addr = (uintptr_t)source;
-  sg.length = size;
-  sg.lkey = lkey;
+// static inline void fillSgeWr(ibv_sge &sg, ibv_exp_send_wr &wr, uint64_t source,
+//                              uint64_t size, uint32_t lkey) {
+//   memset(&sg, 0, sizeof(sg));
+//   sg.addr = (uintptr_t)source;
+//   sg.length = size;
+//   sg.lkey = lkey;
 
-  memset(&wr, 0, sizeof(wr));
-  wr.wr_id = 0;
-  wr.sg_list = &sg;
-  wr.num_sge = 1;
-}
+//   memset(&wr, 0, sizeof(wr));
+//   wr.wr_id = 0;
+//   wr.sg_list = &sg;
+//   wr.num_sge = 1;
+// }
 
 // for UD and DC
 bool rdmaSend(ibv_qp *qp, uint64_t source, uint64_t size, uint32_t lkey,
@@ -254,32 +254,42 @@ bool rdmaFetchAndAdd(ibv_qp *qp, uint64_t source, uint64_t dest, uint64_t add,
   return true;
 }
 
+// 实际faa相关的接口没有被调用
 bool rdmaFetchAndAddBoundary(ibv_qp *qp, uint64_t source, uint64_t dest,
                              uint64_t add, uint32_t lkey, uint32_t remoteRKey,
                              uint64_t boundary, bool singal, uint64_t wr_id) {
   struct ibv_sge sg;
-  struct ibv_exp_send_wr wr;
-  struct ibv_exp_send_wr *wrBad;
+  // struct ibv_exp_send_wr wr;
+  // struct ibv_exp_send_wr *wrBad;
+  struct ibv_send_wr wr;
+  struct ibv_send_wr *wrBad;
 
   fillSgeWr(sg, wr, source, 8, lkey);
 
-  wr.exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD;
-  wr.exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+  // wr.exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD;
+  // wr.exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+  wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+  // wr.send_flags = IBV_SEND_INLINE;
   wr.wr_id = wr_id;
 
   if (singal) {
-    wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+    // wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+    wr.send_flags |= IBV_SEND_SIGNALED;
   }
 
-  wr.ext_op.masked_atomics.log_arg_sz = 3;
-  wr.ext_op.masked_atomics.remote_addr = dest;
-  wr.ext_op.masked_atomics.rkey = remoteRKey;
+  // wr.ext_op.masked_atomics.log_arg_sz = 3;
+  // wr.ext_op.masked_atomics.remote_addr = dest;
+  // wr.ext_op.masked_atomics.rkey = remoteRKey;
 
-  auto &op = wr.ext_op.masked_atomics.wr_data.inline_data.op.fetch_add;
-  op.add_val = add;
-  op.field_boundary = 1ull << boundary;
+  wr.wr.atomic.remote_addr  = dest;
+  wr.wr.atomic.rkey = remoteRKey;
 
-  if (ibv_exp_post_send(qp, &wr, &wrBad)) {
+  // auto &op = wr.ext_op.masked_atomics.wr_data.inline_data.op.fetch_add;
+  // op.add_val = add;
+  // op.field_boundary = 1ull << boundary;
+  wr.wr.atomic.compare_add = add;
+
+  if (ibv_post_send(qp, &wr, &wrBad)) {
     Debug::notifyError("Send with MASK FETCH_AND_ADD failed.");
     return false;
   }
@@ -317,38 +327,39 @@ bool rdmaCompareAndSwap(ibv_qp *qp, uint64_t source, uint64_t dest,
   return true;
 }
 
+// 统一替换为不带mask的版本
 bool rdmaCompareAndSwapMask(ibv_qp *qp, uint64_t source, uint64_t dest,
                             uint64_t compare, uint64_t swap, uint32_t lkey,
                             uint32_t remoteRKey, uint64_t mask, bool singal, uint64_t wrID) {
-  struct ibv_sge sg;
-  struct ibv_exp_send_wr wr;
-  struct ibv_exp_send_wr *wrBad;
+  // struct ibv_sge sg;
+  // struct ibv_exp_send_wr wr;
+  // struct ibv_exp_send_wr *wrBad;
 
-  fillSgeWr(sg, wr, source, 8, lkey);
+  // fillSgeWr(sg, wr, source, 8, lkey);
 
-  wr.exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
-  wr.exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+  // wr.exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
+  // wr.exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
 
-  if (singal) {
-    wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
-  }
+  // if (singal) {
+  //   wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+  // }
 
-  wr.ext_op.masked_atomics.log_arg_sz = 3;
-  wr.ext_op.masked_atomics.remote_addr = dest;
-  wr.ext_op.masked_atomics.rkey = remoteRKey;
-  wr.wr_id = wrID;
+  // wr.ext_op.masked_atomics.log_arg_sz = 3;
+  // wr.ext_op.masked_atomics.remote_addr = dest;
+  // wr.ext_op.masked_atomics.rkey = remoteRKey;
+  // wr.wr_id = wrID;
 
-  auto &op = wr.ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
-  op.compare_val = compare;
-  op.swap_val = swap;
+  // auto &op = wr.ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
+  // op.compare_val = compare;
+  // op.swap_val = swap;
 
-  op.compare_mask = mask;
-  op.swap_mask = mask;
+  // op.compare_mask = mask;
+  // op.swap_mask = mask;
 
-  if (ibv_exp_post_send(qp, &wr, &wrBad)) {
-    Debug::notifyError("Send with MASK ATOMIC_CMP_AND_SWP failed.");
-    return false;
-  }
+  // if (ibv_exp_post_send(qp, &wr, &wrBad)) {
+  //   Debug::notifyError("Send with MASK ATOMIC_CMP_AND_SWP failed.");
+  //   return false;
+  // }
   return true;
 }
 
@@ -595,44 +606,45 @@ bool rdmaWriteCas(ibv_qp *qp, const RdmaOpRegion &write_ror,
   return true;
 }
 
+// 只使用不带mask的接口
 bool rdmaWriteCasMask(ibv_qp *qp, const RdmaOpRegion &write_ror,
                   const RdmaOpRegion &cas_ror, uint64_t compare, uint64_t swap, uint64_t mask,
                   bool isSignaled, uint64_t wrID) {
 
-  struct ibv_sge sg[2];
-  struct ibv_exp_send_wr wr[2];
-  struct ibv_exp_send_wr *wrBad;
+  // struct ibv_sge sg[2];
+  // struct ibv_exp_send_wr wr[2];
+  // struct ibv_exp_send_wr *wrBad;
 
-  fillSgeWr(sg[0], wr[0], write_ror.source, write_ror.size, write_ror.lkey);
-  wr[0].exp_opcode = IBV_EXP_WR_RDMA_WRITE;
-  wr[0].wr.rdma.remote_addr = write_ror.dest;
-  wr[0].wr.rdma.rkey = write_ror.remoteRKey;
-  wr[0].next = &wr[1];
+  // fillSgeWr(sg[0], wr[0], write_ror.source, write_ror.size, write_ror.lkey);
+  // wr[0].exp_opcode = IBV_EXP_WR_RDMA_WRITE;
+  // wr[0].wr.rdma.remote_addr = write_ror.dest;
+  // wr[0].wr.rdma.rkey = write_ror.remoteRKey;
+  // wr[0].next = &wr[1];
 
-  fillSgeWr(sg[1], wr[1], cas_ror.source, 8, cas_ror.lkey);
-  wr[1].exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
-  wr[1].exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
-  if (isSignaled) {
-    wr[1].exp_send_flags |= IBV_EXP_SEND_SIGNALED;
-  }
-  wr[1].ext_op.masked_atomics.log_arg_sz = 3;
-  wr[1].ext_op.masked_atomics.remote_addr = cas_ror.dest;
-  wr[1].ext_op.masked_atomics.rkey = cas_ror.remoteRKey;
-  // wr[1].exp_send_flags |= IBV_EXP_SEND_FENCE;
-  wr[1].wr_id = wrID;
+  // fillSgeWr(sg[1], wr[1], cas_ror.source, 8, cas_ror.lkey);
+  // wr[1].exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
+  // wr[1].exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+  // if (isSignaled) {
+  //   wr[1].exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+  // }
+  // wr[1].ext_op.masked_atomics.log_arg_sz = 3;
+  // wr[1].ext_op.masked_atomics.remote_addr = cas_ror.dest;
+  // wr[1].ext_op.masked_atomics.rkey = cas_ror.remoteRKey;
+  // // wr[1].exp_send_flags |= IBV_EXP_SEND_FENCE;
+  // wr[1].wr_id = wrID;
 
-  auto &op = wr[1].ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
-  op.compare_val = compare;
-  op.swap_val = swap;
+  // auto &op = wr[1].ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
+  // op.compare_val = compare;
+  // op.swap_val = swap;
 
-  op.compare_mask = mask;
-  op.swap_mask = mask;
+  // op.compare_mask = mask;
+  // op.swap_mask = mask;
 
-  if (ibv_exp_post_send(qp, &wr[0], &wrBad)) {
-    Debug::notifyError("Send with Write Cas failed.");
-    sleep(10);
-    return false;
-  }
+  // if (ibv_exp_post_send(qp, &wr[0], &wrBad)) {
+  //   Debug::notifyError("Send with Write Cas failed.");
+  //   sleep(10);
+  //   return false;
+  // }
   return true;
 }
 
@@ -640,44 +652,44 @@ bool rdmaTwoCasMask(ibv_qp *qp, const RdmaOpRegion &cas_ror_1, uint64_t compare_
                     const RdmaOpRegion &cas_ror_2, uint64_t compare_2, uint64_t swap_2, uint64_t mask_2,
                     bool isSignaled, uint64_t wrID) {
 
-  struct ibv_sge sg[2];
-  struct ibv_exp_send_wr wr[2];
-  struct ibv_exp_send_wr *wrBad;
+  // struct ibv_sge sg[2];
+  // struct ibv_exp_send_wr wr[2];
+  // struct ibv_exp_send_wr *wrBad;
 
-  fillSgeWr(sg[0], wr[0], cas_ror_1.source, 8, cas_ror_1.lkey);
-  wr[0].exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
-  wr[0].exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
-  wr[0].ext_op.masked_atomics.log_arg_sz = 3;
-  wr[0].ext_op.masked_atomics.remote_addr = cas_ror_1.dest;
-  wr[0].ext_op.masked_atomics.rkey = cas_ror_1.remoteRKey;
-  wr[0].next = &wr[1];
-  auto &op_1 = wr[0].ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
-  op_1.compare_val = compare_1;
-  op_1.swap_val = swap_1;
-  op_1.compare_mask = mask_1;
-  op_1.swap_mask = mask_1;
+  // fillSgeWr(sg[0], wr[0], cas_ror_1.source, 8, cas_ror_1.lkey);
+  // wr[0].exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
+  // wr[0].exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+  // wr[0].ext_op.masked_atomics.log_arg_sz = 3;
+  // wr[0].ext_op.masked_atomics.remote_addr = cas_ror_1.dest;
+  // wr[0].ext_op.masked_atomics.rkey = cas_ror_1.remoteRKey;
+  // wr[0].next = &wr[1];
+  // auto &op_1 = wr[0].ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
+  // op_1.compare_val = compare_1;
+  // op_1.swap_val = swap_1;
+  // op_1.compare_mask = mask_1;
+  // op_1.swap_mask = mask_1;
 
-  fillSgeWr(sg[1], wr[1], cas_ror_2.source, 8, cas_ror_2.lkey);
-  wr[1].exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
-  wr[1].exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
-  if (isSignaled) {
-    wr[1].exp_send_flags |= IBV_EXP_SEND_SIGNALED;
-  }
-  wr[1].ext_op.masked_atomics.log_arg_sz = 3;
-  wr[1].ext_op.masked_atomics.remote_addr = cas_ror_2.dest;
-  wr[1].ext_op.masked_atomics.rkey = cas_ror_2.remoteRKey;
-    // wr[1].exp_send_flags |= IBV_EXP_SEND_FENCE;
-  wr[1].wr_id = wrID;
-  auto &op_2 = wr[1].ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
-  op_2.compare_val = compare_2;
-  op_2.swap_val = swap_2;
-  op_2.compare_mask = mask_2;
-  op_2.swap_mask = mask_2;
+  // fillSgeWr(sg[1], wr[1], cas_ror_2.source, 8, cas_ror_2.lkey);
+  // wr[1].exp_opcode = IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP;
+  // wr[1].exp_send_flags = IBV_EXP_SEND_EXT_ATOMIC_INLINE;
+  // if (isSignaled) {
+  //   wr[1].exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+  // }
+  // wr[1].ext_op.masked_atomics.log_arg_sz = 3;
+  // wr[1].ext_op.masked_atomics.remote_addr = cas_ror_2.dest;
+  // wr[1].ext_op.masked_atomics.rkey = cas_ror_2.remoteRKey;
+  //   // wr[1].exp_send_flags |= IBV_EXP_SEND_FENCE;
+  // wr[1].wr_id = wrID;
+  // auto &op_2 = wr[1].ext_op.masked_atomics.wr_data.inline_data.op.cmp_swap;
+  // op_2.compare_val = compare_2;
+  // op_2.swap_val = swap_2;
+  // op_2.compare_mask = mask_2;
+  // op_2.swap_mask = mask_2;
 
-  if (ibv_exp_post_send(qp, &wr[0], &wrBad)) {
-    Debug::notifyError("Send with Two Cas Mask failed.");
-    sleep(10);
-    return false;
-  }
+  // if (ibv_exp_post_send(qp, &wr[0], &wrBad)) {
+  //   Debug::notifyError("Send with Two Cas Mask failed.");
+  //   sleep(10);
+  //   return false;
+  // }
   return true;
 }

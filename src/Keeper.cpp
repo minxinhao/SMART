@@ -41,7 +41,7 @@ bool Keeper::connectMemcached() {
   std::getline(conf, addr);
   std::getline(conf, port);
 
-  memc = memcached_create(NULL);
+  memc = memcached_create(NULL); 
   servers = memcached_server_list_append(servers, trim(addr).c_str(),
                                          std::stoi(trim(port)), &rc);
   rc = memcached_server_push(memc, servers);
@@ -103,6 +103,7 @@ void Keeper::serverConnect() {
       continue;
     }
     uint32_t serverNum = atoi(serverNumStr);
+    printf("serverNum:%d\n",serverNum);
     free(serverNumStr);
 
     // /connect server K

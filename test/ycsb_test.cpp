@@ -167,6 +167,7 @@ void thread_load(int id) {
   // 1. insert ycsb_load
   std::string op;
   std::ifstream load_in(ycsb_load_path + std::to_string(loader_id));
+  std::cout << "file_name: " << ycsb_trans_path + std::to_string(loader_id)<<"\n";
   if (!load_in.is_open()) {
     printf("Error opening load file\n");
     assert(false);
@@ -400,9 +401,13 @@ int main(int argc, char *argv[]) {
   if (rm_write_conflict) {
     dsm->loadKeySpace(ycsb_load_path, kIsStr);
   }
+  printf("dsm init end\n");
+
   dsm->registerThread();
   tree = new Tree(dsm);
   dsm->barrier("benchmark");
+
+  printf("tree init end\n");
 
   for (int i = 0; i < kThreadCount; i ++) {
     th[i] = std::thread(thread_run, i);

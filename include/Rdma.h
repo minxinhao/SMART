@@ -19,8 +19,8 @@
 #define DCT_ACCESS_KEY 3185
 #define UD_PKEY 0x11111111
 #define PSN 3185
-#define NET_DEV_NAME "enp202s0f0" // [CONFIG]
-#define IB_DEV_NAME_IDX '2'       // [CONFIG]
+#define NET_DEV_NAME "enp134s0f0np0" // [CONFIG]
+#define IB_DEV_NAME_IDX '0'       // [CONFIG]
 #define MLX_PORT 1                // [CONFIG]
 #define ON_CHIP_SIZE 128
 
@@ -81,8 +81,10 @@ bool createQueuePair(ibv_qp **qp, ibv_qp_type mode, ibv_cq *send_cq,
                      ibv_cq *recv_cq, RdmaContext *context,
                      uint32_t qpsMaxDepth = kQPMaxDepth, uint32_t maxInlineData = kInlineDataMax);
 
-bool createDCTarget(ibv_exp_dct **dct, ibv_cq *cq, RdmaContext *context,
-                    uint32_t qpsMaxDepth = kQPMaxDepth, uint32_t maxInlineData = kInlineDataMax);
+// 没使用到
+// bool createDCTarget(ibv_exp_dct **dct, ibv_cq *cq, RdmaContext *context,
+//                     uint32_t qpsMaxDepth = kQPMaxDepth, uint32_t maxInlineData = kInlineDataMax);
+
 void fillAhAttr(ibv_ah_attr *attr, uint32_t remoteLid, uint8_t *remoteGid,
                 RdmaContext *context);
 

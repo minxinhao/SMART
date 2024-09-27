@@ -34,7 +34,9 @@ DSM *DSM::getInstance(const DSMConfig &conf) {
 DSM::DSM(const DSMConfig &conf)
     : conf(conf), appID(0), cache(conf.cacheConfig) {
 
+  printf("-----alloc 1------\n");
   baseAddr = (uint64_t)hugePageAlloc(conf.dsmSize * define::GB);
+  printf("-----alloc 1 end------\n");
 
   Debug::notifyInfo("shared memory size: %dGB, 0x%lx", conf.dsmSize, baseAddr);
   Debug::notifyInfo("rdma cache size: %dGB", conf.cacheConfig.cacheSize);
