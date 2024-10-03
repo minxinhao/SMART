@@ -166,4 +166,7 @@ bool rdmaWriteCasMask(ibv_qp *qp, const RdmaOpRegion &write_ror,
 bool rdmaTwoCasMask(ibv_qp *qp, const RdmaOpRegion &cas_ror_1, uint64_t compare_1, uint64_t swap_1, uint64_t mask_1,
                     const RdmaOpRegion &cas_ror_2, uint64_t compare_2, uint64_t swap_2, uint64_t mask_2,
                     bool isSignaled, uint64_t wrID = 0);
+bool rdmaTwoCas(ibv_qp *qp, const RdmaOpRegion &cas_ror_1, uint64_t compare_1, uint64_t swap_1, 
+                    const RdmaOpRegion &cas_ror_2, uint64_t compare_2, uint64_t swap_2,
+                    bool isSignaled, uint64_t wrID = 0);
 #endif

@@ -546,6 +546,61 @@ void DSM::two_cas_mask(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1
     (*ctx->yield)(*ctx->master);
   }
 }
+
+void DSM::two_cas(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1, 
+                       RdmaOpRegion &cas_ror_2, uint64_t equal_2, uint64_t val_2,
+                       bool signal, CoroContext *ctx) {
+  int node_id;
+  {
+    GlobalAddress gaddr;
+    gaddr.val = cas_ror_1.dest;
+    node_id = gaddr.nodeID;
+    fill_keys_dest(cas_ror_1, gaddr, cas_ror_1.is_on_chip);
+  }
+  {
+    GlobalAddress gaddr;
+    gaddr.val = cas_ror_2.dest;
+    fill_keys_dest(cas_ror_2, gaddr, cas_ror_2.is_on_chip);
+  }
+
+  if (ctx == nullptr) {
+    rdmaTwoCas(iCon->data[0][node_id], cas_ror_1, equal_1, val_1,
+                   cas_ror_2, equal_2, val_2, signal);
+  } else {
+    rdmaTwoCas(iCon->data[0][node_id], cas_ror_1, equal_1, val_1,
+                   cas_ror_2, equal_2, val_2, true, ctx->coro_id);
+    (*ctx->yield)(*ctx->master);
+  }
+}
+
+
+std::pair<bool, bool> DSM::two_cas_sync(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1,
+                                             RdmaOpRegion &cas_ror_2, uint64_t equal_2, uint64_t val_2,
+                                             CoroContext *ctx) {
+  if (GlobalAddress{cas_ror_1.dest}.nodeID == GlobalAddress{cas_ror_2.dest}.nodeID) {
+    two_cas(cas_ror_1, equal_1, val_1, cas_ror_2, equal_2, val_2, true, ctx);
+
+    if (ctx == nullptr) {
+      ibv_wc wc;
+      pollWithCQ(iCon->cq, 1, &wc);
+    }
+  }
+  else {
+    if(!cas_ror_1.is_on_chip) cas(GlobalAddress{cas_ror_1.dest}, equal_1, val_1, (uint64_t *)cas_ror_1.source, true, ctx);
+    else cas_dm(GlobalAddress{cas_ror_1.dest}, equal_1, val_1, (uint64_t *)cas_ror_1.source, true, ctx);
+    if(!cas_ror_2.is_on_chip) cas(GlobalAddress{cas_ror_2.dest}, equal_2, val_2, (uint64_t *)cas_ror_2.source, true, ctx);
+    else cas_dm(GlobalAddress{cas_ror_2.dest}, equal_2, val_2, (uint64_t *)cas_ror_2.source, true, ctx);
+
+    if (ctx == nullptr) {
+      ibv_wc wc;
+      pollWithCQ(iCon->cq, 2, &wc);
+    }
+  }
+
+  return std::make_pair(equal_1 == *(uint64_t *)cas_ror_1.source, equal_2 == *(uint64_t *)cas_ror_2.source);
+}
+
+
 std::pair<bool, bool> DSM::two_cas_mask_sync(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1, uint64_t mask_1,
                                              RdmaOpRegion &cas_ror_2, uint64_t equal_2, uint64_t val_2, uint64_t mask_2,
                                              CoroContext *ctx) {

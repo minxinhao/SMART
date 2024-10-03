@@ -63,6 +63,8 @@ public:
     return cas_buffer + cas_buffer_cur;
   }
 
+  // 在保存的256个page buffer中轮流分配
+  // 有点奇怪的是这里有机制保证被归还了吗
   char *get_page_buffer() {
     page_buffer_cur = (page_buffer_cur + 1) % kPageBufferCnt;
     return page_buffer + page_buffer_cur * define::allocationPageSize;

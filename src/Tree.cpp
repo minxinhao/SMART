@@ -12,7 +12,6 @@
 #include <atomic>
 #include <mutex>
 
-
 double cache_miss[MAX_APP_THREAD];
 double cache_hit[MAX_APP_THREAD];
 uint64_t lock_fail[MAX_APP_THREAD];
@@ -70,7 +69,8 @@ retry:
 
 GlobalAddress Tree::get_root_ptr_ptr() {
   GlobalAddress addr;
-  // 对这里的疑问是，这样tree没有很好的在memory node之间分散了。root node固定在node 0.
+  // 对这里的疑问是，这样tree没有很好的在memory node之间分散了。root
+  // node固定在node 0.
   addr.nodeID = 0;
   addr.offset = define::kRootPointerStoreOffest + sizeof(GlobalAddress) * tree_id;
   return addr;
@@ -115,6 +115,9 @@ void Tree::insert(const Key &k, Value v, CoroContext *cxt, int coro_id, bool is_
   uint64_t* cas_buffer;
   int debug_cnt = 0;
 
+  // this->print(cxt, coro_id);
+  uint64_t int_k = key2int(k);
+  // if (int_k == 3232700585171816769) printf("target\n");
 #ifdef TREE_ENABLE_WRITE_COMBINING
   lock_res = local_lock_table->acquire_local_write_lock(k, v, &busy_waiting_queue, cxt, coro_id);
   write_handover = (lock_res.first && !lock_res.second);
@@ -211,6 +214,7 @@ next:
       }
 #ifdef TREE_ENABLE_IN_PLACE_UPDATE
       // in place update leaf
+      // printf("in_place_update_leaf for key:%lu end insert\n", key2int(k));
       in_place_update_leaf(k, v, p.addr(), leaf, cxt, coro_id);
 #else
       // out of place update leaf
@@ -309,7 +313,9 @@ next:
       // udpate cas header. Optimization: no need to snyc; mask node_type
       auto header_buffer = (dsm->get_rbuf(coro_id)).get_header_buffer();
       auto new_hdr = Header::split_header(hdr, i);
-      dsm->cas_mask(GADD(p.addr(), sizeof(GlobalAddress)), (uint64_t)hdr, (uint64_t)new_hdr, header_buffer, ~Header::node_type_mask, false, cxt);
+      // dsm->cas_mask(GADD(p.addr(), sizeof(GlobalAddress)), (uint64_t)hdr, (uint64_t)new_hdr, header_buffer, ~Header::node_type_mask, false, cxt);
+
+      dsm->cas(GADD(p.addr(), sizeof(GlobalAddress)), (uint64_t)hdr, (uint64_t)new_hdr, header_buffer, false, cxt);
       goto insert_finish;
     }
   }
@@ -324,6 +330,9 @@ next:
 
   // 3.3 try get the next internalEntry
   max_num = node_type_to_num(p.type());
+  // 这里search的逻辑有点怪，是可以修改一下吗？
+  // 他的slot是顺序写入的？ 然而有一个问题就是他会原地delete，这会带来bug
+
   // search a exists slot first
   for (int i = 0; i < max_num; ++ i) {
     auto old_e = p_node->records[i];
@@ -337,7 +346,7 @@ next:
     }
   }
   // if no match slot, then find an empty slot to insert leaf directly
-  for (int i = 0; i < max_num; ++ i) {
+  for (int i = 0; i < max_num; ++i) {
     auto old_e = p_node->records[i];
     if (old_e == InternalEntry::Null()) {
       auto e_ptr = GADD(p.addr(), sizeof(GlobalAddress) + sizeof(Header) + i * sizeof(InternalEntry));
@@ -345,6 +354,7 @@ next:
       bool res = out_of_place_write_leaf(k, v, depth + 1, leaf_addr, get_partial(k, depth), e_ptr, old_e, node_ptr, cas_buffer, cxt, coro_id);
       // cas success, return
       if (res) {
+        // printf("insert key:%lu value:%lu into leaf :%lx under inner node:%lx at slot :%d \n", key2int(k), v, (uint64_t)leaf_addr,(uint64_t)p.addr(),i);
         goto insert_finish;
       }
       // cas fail, check
@@ -368,6 +378,7 @@ next:
   cas_buffer = (dsm->get_rbuf(coro_id)).get_cas_buffer();
   if (insert_behind(k, v, depth + 1, leaf_addr, get_partial(k, depth), p.type(), node_ptr, cas_buffer, slot_id, cxt, coro_id)){  // insert success
     auto next_type = num_to_node_type(slot_id);
+    // printf("success to insert leaf:%lx at slot:%d of node:%lx with depth:%d node_type:%d\n",(uint64_t)leaf_addr,slot_id,(uint64_t)node_ptr,depth,next_type);
     cas_node_type(next_type, p_ptr, p, hdr, cxt, coro_id);
 #ifdef TREE_ENABLE_CACHE
     if (from_cache) {  // cache is outdated since node type is changed
@@ -436,8 +447,8 @@ re_read:
 void Tree::in_place_update_leaf(const Key &k, Value &v, const GlobalAddress &leaf_addr, Leaf* leaf,
                                CoroContext *cxt, int coro_id) {
 #ifdef TREE_ENABLE_EMBEDDING_LOCK
-  // STRUCT_OFFSET(Leaf, lock_byte) = 8(reverse ptr) + 1(valid+padd) + 8(checksum) + 8(key) + 8(value);
-  // STRUCT_OFFSET(Leaf, lock_byte) = 33
+  // STRUCT_OFFSET(Leaf, lock_byte) = 8(reverse ptr) + 1(valid+padd) +
+  // 8(checksum) + 8(key) + 8(value); STRUCT_OFFSET(Leaf, lock_byte) = 33
   // ROUND_DOWN(x,n) = ((x) & ~((1<<(n)) - 1)) ; 去除低于n位的内容
   // (1<<(n); (1<<(n)) - 1; ~((1<<(n)) - 1);
   // ((1<<(3)) - 1) = 7 ; ~((1<<(3)) - 1);
@@ -446,9 +457,10 @@ void Tree::in_place_update_leaf(const Key &k, Value &v, const GlobalAddress &lea
   static const uint64_t lock_cas_offset = ROUND_DOWN(STRUCT_OFFSET(Leaf, lock_byte), 3);
   // STRUCT_OFFSET(Leaf, lock_byte)  = 33
   // lock_cas_offset = 32
-  // (STRUCT_OFFSET(Leaf, lock_byte) - lock_cas_offset) = 1 ; 也就是lock在这个8 bytes的第1个bytes
+  // (STRUCT_OFFSET(Leaf, lock_byte) - lock_cas_offset) = 1 ; 也就是lock在这个8
+  // bytes的第1个bytes
   // * 8  = bits数； 1 << bits数，等于这个8bytes中，lock所在bits的mask
-  static const uint64_t lock_mask       = 1UL << ((STRUCT_OFFSET(Leaf, lock_byte) - lock_cas_offset) * 8);
+  static const uint64_t lock_mask = 1UL << ((STRUCT_OFFSET(Leaf, lock_byte) - lock_cas_offset) * 8);
 #endif
 
   auto cas_buffer = (dsm->get_rbuf(coro_id)).get_cas_buffer();
@@ -460,7 +472,10 @@ void Tree::in_place_update_leaf(const Key &k, Value &v, const GlobalAddress &lea
     // 这里同样有个问题，cas的作用域是8bytes，lock在leaf尾端，导致会越界访问
     // 如果去掉这里的mask可能有正确性问题
     // 需要在alloc的时候在尾部预留足够空间
-    return dsm->cas_mask_sync(GADD(unique_leaf_addr, lock_cas_offset), 0UL, ~0UL, cas_buffer, lock_mask, cxt);
+    // return dsm->cas_mask_sync(GADD(unique_leaf_addr, lock_cas_offset), 0UL,
+    // ~0UL, cas_buffer, lock_mask, cxt);
+    return dsm->cas_sync(GADD(unique_leaf_addr, lock_cas_offset), 0UL, ~0UL,
+                         cas_buffer, cxt);
 #else
     GlobalAddress lock_addr;
     uint64_t mask;
@@ -470,9 +485,12 @@ void Tree::in_place_update_leaf(const Key &k, Value &v, const GlobalAddress &lea
   };
 
   // unlock function
-  auto unlock = [=](const GlobalAddress &unique_leaf_addr){
+  auto unlock = [=](const GlobalAddress &unique_leaf_addr) {
 #ifdef TREE_ENABLE_EMBEDDING_LOCK
-    dsm->cas_mask_sync(GADD(unique_leaf_addr, lock_cas_offset), ~0UL, 0UL, cas_buffer, lock_mask, cxt);
+    // dsm->cas_mask_sync(GADD(unique_leaf_addr, lock_cas_offset), ~0UL, 0UL,
+    // cas_buffer, lock_mask, cxt);
+    dsm->cas_sync(GADD(unique_leaf_addr, lock_cas_offset), ~0UL, 0UL,
+                  cas_buffer, cxt);
 #else
     GlobalAddress lock_addr;
     uint64_t mask;
@@ -593,7 +611,6 @@ update_finish:
   return res;
 }
 
-
 void Tree::get_on_chip_lock_addr(const GlobalAddress &leaf_addr, GlobalAddress &lock_addr, uint64_t &mask) {
   auto leaf_offset = leaf_addr.offset;
   auto lock_index = CityHash64((char *)&leaf_offset, sizeof(leaf_offset)) % define::kOnChipLockNum;
@@ -656,6 +673,7 @@ void Tree::unlock_node(const GlobalAddress &node_addr, CoroContext *cxt, int cor
 }
 #endif
 
+// 向p_ptr指定的internal entry中，插入leaf_addr, partial_key组成的entry
 // 如果leaf_addr为空，说明此leaf未写入到过远端，为Leaf分配远端空间，并写入到远端，等待写入完成
 // 如果该Leaf在远端已经有空间，则先更新其rev_ptr字段为e_ptr(父节点指针)
 // 更新e_ptr，cas写入新的partial_key和leaf_addr
@@ -673,6 +691,7 @@ bool Tree::out_of_place_write_leaf(const Key &k, Value &v, int depth, GlobalAddr
     auto leaf_buffer = (dsm->get_rbuf(coro_id)).get_leaf_buffer();
     new (leaf_buffer) Leaf(k, v, e_ptr);
     leaf_addr = dsm->alloc(sizeof(Leaf));
+    // printf("out_of_place_write_leaf alloc leaf: addr offset:%lx\n",(uint64_t)leaf_addr);
     dsm->write_sync(leaf_buffer, leaf_addr, sizeof(Leaf), cxt);
   }
   else {  // write the changed e_ptr inside leaf
@@ -684,6 +703,7 @@ bool Tree::out_of_place_write_leaf(const Key &k, Value &v, int depth, GlobalAddr
   // cas entry
   auto new_e = InternalEntry(partial_key, sizeof(Leaf) < 128 ? sizeof(Leaf) : 0, leaf_addr);
   auto remote_cas = [=](){
+    // printf("insert leaf:%lx behind intern:%lx \n",(uint64_t)leaf_addr,(uint64_t)e_ptr);
     return dsm->cas_sync(e_ptr, (uint64_t)old_e, (uint64_t)new_e, ret_buffer, cxt);
   };
 
@@ -725,11 +745,14 @@ bool Tree::read_node(InternalEntry &p, bool& type_correct, char *node_buffer, co
 }
 
 
+// 生成一系列的internal node，用于足够存放partial_len对应的partial
+// 
 bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddress& leaf_addr, int partial_len, uint8_t diff_partial,
                                    const GlobalAddress &e_ptr, const InternalEntry &old_e, const GlobalAddress& node_addr,
                                    uint64_t *ret_buffer, CoroContext *cxt, int coro_id) {
   // 在header中，partial数组部分是6 bytes，也就是最多只能存放6段partial。
-  // hPartialLenMax = 6， 额外+1是因为尾部有一个额外的+1，对与刚好6段的也进行兼容。
+  // hPartialLenMax = 6，
+  // 额外+1是因为尾部有一个额外的+1，对与刚好6段的也进行兼容。
   // 生成的这些internal node是顺序的上下级关系。
   int new_node_num = partial_len / (define::hPartialLenMax + 1) + 1;
   auto leaf_unwrite = (leaf_addr == GlobalAddress::Null());
@@ -758,6 +781,7 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
   NodeType nodes_type = num_to_node_type(2);
   InternalPage ** node_pages = new InternalPage* [new_node_num];
   auto rev_ptr = e_ptr;
+  // printf("alloc %d intern node\n",new_node_num);
   for (int i = 0; i < new_node_num - 1; ++ i) {
     auto node_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
     node_pages[i] = new (node_buffer) InternalPage(k, define::hPartialLenMax, depth, nodes_type, rev_ptr);
@@ -766,6 +790,16 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
     rev_ptr = GADD(node_addrs[i], sizeof(GlobalAddress) + sizeof(Header));
     partial_len -= define::hPartialLenMax + 1;
     depth += define::hPartialLenMax + 1;
+
+    // auto& intern_page = node_pages[i];
+    // auto& hdr = intern_page->hdr;
+    // printf("node:%d ptr:%lx rev_ptr:%lx depth:%d node_type:%d partial_len:%d partial:",i,(uint64_t)node_addrs[i],(uint64_t)intern_page->rev_ptr,hdr.depth,hdr.type(),hdr.partial_len);
+    // for(int j = 0 ; j < hdr.partial_len; j++){
+    //   printf(" %x",hdr.partial[j]);
+    // }
+    // printf("\n");
+    // auto& recd = intern_page->records[0];
+    // printf("records[0]: partial:%x is_leaf:%d node_type:%d child_ptr:%lx\n",recd.partial,recd.is_leaf,recd.type(),(uint64_t)recd.addr());
   }
 
   // insert the two leaf into the last node
@@ -774,7 +808,18 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
   node_pages[new_node_num - 1]->records[0] = InternalEntry(diff_partial, old_e);
   node_pages[new_node_num - 1]->records[1] = InternalEntry(get_partial(k, depth + partial_len),
                                                            sizeof(Leaf) < 128 ? sizeof(Leaf) : 0, leaf_addr);
-
+  // auto& intern_page = node_pages[new_node_num-1];
+  // auto& hdr = intern_page->hdr;
+  // printf("node:%d ptr:%lx rev_ptr:%lx depth:%d node_type:%d partial_len:%d partial:",new_node_num-1,(uint64_t)node_addrs[new_node_num-1],(uint64_t)intern_page->rev_ptr,hdr.depth,hdr.type(),hdr.partial_len);
+  // for(int j = 0 ; j < hdr.partial_len; j++){
+  //   printf(" %x",hdr.partial[j]);
+  // }
+  // printf("\n");
+  // auto& recd = intern_page->records[0];
+  // auto& recd2 = intern_page->records[1];
+  // printf("records[0]: partial:%x is_leaf:%d kv_len:%d child_ptr:%lx\n",recd.partial,recd.is_leaf,recd.kv_len,(uint64_t)recd.addr());
+  // printf("records[1]: partial:%x is_leaf:%d kv_len:%d child_ptr:%lx\n",recd2.partial,recd2.is_leaf,recd2.kv_len,(uint64_t)recd2.addr());
+  
   // init the parent entry
   auto new_e = InternalEntry(old_e.partial, nodes_type, node_addrs[0]);
   auto page_size = sizeof(GlobalAddress) + sizeof(Header) + node_type_to_num(nodes_type) * sizeof(InternalEntry);
@@ -851,8 +896,12 @@ void Tree::cas_node_type(NodeType next_type, GlobalAddress p_ptr, InternalEntry 
     rs[1].source     = (uint64_t)cas_buffer_2;
     rs[1].dest       = header_addr;
     rs[1].is_on_chip = false;
-    return dsm->two_cas_mask_sync(rs[0], (uint64_t)p, (uint64_t)new_e, ~0UL,
-                                  rs[1], hdr, Header(next_type), Header::node_type_mask, cxt);
+    // return dsm->two_cas_mask_sync(rs[0], (uint64_t)p, (uint64_t)new_e, ~0UL, rs[1], hdr, Header(next_type), Header::node_type_mask, cxt);
+    Header new_hdr(hdr);
+    new_hdr.node_type = next_type;
+    auto [cas_1,cas_2] = dsm->two_cas_sync(rs[0], (uint64_t)p, (uint64_t)new_e, rs[1], (uint64_t)hdr, (uint64_t)new_hdr, cxt);
+
+    return std::make_pair(cas_1,cas_2);
   };
 
   // only cas old_entry
@@ -863,7 +912,8 @@ void Tree::cas_node_type(NodeType next_type, GlobalAddress p_ptr, InternalEntry 
 
   // only cas node_header
   auto remote_cas_header = [=, &hdr](){
-    return dsm->cas_mask_sync(header_addr, hdr, Header(next_type), cas_buffer_2, Header::node_type_mask, cxt);
+    // return dsm->cas_mask_sync(header_addr, hdr, Header(next_type), cas_buffer_2, Header::node_type_mask, cxt);
+    return dsm->cas_sync(header_addr, hdr, Header(next_type), cas_buffer_2, cxt);
   };
 
   // read down to find target entry when split
@@ -902,6 +952,8 @@ re_switch:
 }
 
 
+// 对node_type确定的num_slot之内，尝试插入leaf_addr对应的internal entry
+// depth没用到
 bool Tree::insert_behind(const Key &k, Value &v, int depth, GlobalAddress& leaf_addr, uint8_t partial_key, NodeType node_type,
                          const GlobalAddress &node_addr, uint64_t *ret_buffer, int& inserted_idx,
                          CoroContext *cxt, int coro_id) {
@@ -1530,4 +1582,116 @@ void Tree::clear_debug_info() {
   memset(try_read_node, 0, sizeof(uint64_t) * MAX_APP_THREAD);
   memset(read_node_type, 0, sizeof(uint64_t) * MAX_APP_THREAD * MAX_NODE_TYPE_NUM);
   memset(retry_cnt, 0, sizeof(uint64_t) * MAX_APP_THREAD * MAX_FLAG_NUM);
+}
+
+
+void Tree::print(CoroContext *cxt, int coro_id){
+  // traversal
+  GlobalAddress p_ptr;
+  InternalEntry p;
+  GlobalAddress node_ptr;  // node address(excluding header)
+  int depth;
+
+  // temp
+  GlobalAddress leaf_addr = GlobalAddress::Null();
+  char *page_buffer;
+  bool is_valid, type_correct;
+  InternalPage *p_node = nullptr;
+  Header hdr;
+  int max_num;
+
+  p_ptr = root_ptr_ptr;
+  p = get_root_ptr(cxt, coro_id);
+  node_ptr = root_ptr_ptr;
+  depth = 0;
+  std::queue<std::tuple<InternalPage, GlobalAddress>> bfs_res;
+
+  printf("===================print start===============\n");
+  if (p == InternalEntry::Null()) {
+    printf("Tree is null: root_ptr_ptr:%lx\n",(uint64_t)root_ptr_ptr);
+    printf("===================print end===============\n");
+    return;
+  }
+
+  if (p.is_leaf) {
+    auto leaf_buffer = (dsm->get_rbuf(coro_id)).get_leaf_buffer();
+    is_valid = read_leaf(p.addr(), leaf_buffer,
+                         std::max((unsigned long)p.kv_len, sizeof(Leaf)), p_ptr,
+                         false, cxt, coro_id);
+    if (!is_valid) {
+      printf("invalid leaf node\n");
+      assert(false);
+    }
+
+    printf("root with only one leaf\n");
+    printf("root: leaf addr:%lx kv_len:%d partial:%d \n", (uint64_t)p.addr(), p.kv_len, p.partial);
+    auto leaf = (Leaf *)leaf_buffer;
+    auto _k = leaf->get_key();
+    auto _v = leaf->get_value();
+    printf("leaf: k:%16lx value:%lx \n", key2int(_k), _v);
+    printf("===================print end===============\n");
+    return;
+  }
+
+  printf("root_node(%lx): addr:%lx type:%d is_leaf:%d\n",(uint64_t)p_ptr,(uint64_t)p.addr(),p.type(),p.is_leaf);
+  depth++;  // partial key in entry is matched
+  // 中间节点，保存internal并向下搜索
+  // 1. Find out a node
+  // 1.1 read the node
+  page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
+  is_valid = read_node(p, type_correct, page_buffer, p_ptr, depth, false, cxt,
+                       coro_id);
+  p_node = (InternalPage *)page_buffer;
+  if (!is_valid) {  // node deleted || outdated cache entry in cached node
+    printf("invalid root node\n");
+    assert(false);
+  }
+  bfs_res.push(std::make_tuple(*p_node, p.addr()));
+  while (!bfs_res.empty()) {
+    auto &[cur_intern_page, cur_node_ptr] = bfs_res.front();
+    
+    auto &hdr = cur_intern_page.hdr;
+    auto num_slot = node_type_to_num(hdr.type());
+    printf("internal node: ptr:%lx revese_ptr:%lx depth:%d node_type:%d num_slot:%d partilen:%d\n",(uint64_t)cur_node_ptr, (uint64_t)cur_intern_page.rev_ptr, hdr.depth, hdr.node_type, num_slot, hdr.partial_len);
+    printf("partial:");
+    for (int i = 0; i < hdr.partial_len; i++) {
+      printf(" %d", hdr.partial[i]);
+    }
+    printf("\n");
+
+    auto slot_ptr = GADD(cur_node_ptr, sizeof(GlobalAddress) + sizeof(Header));
+    depth = hdr.depth;
+    for (int i = 0; i < num_slot; i++) {
+      auto &old_e = p_node->records[i];
+      if(old_e == InternalEntry::Null()) break;
+      auto p_ptr = GADD(slot_ptr, i * sizeof(InternalEntry));
+      // 打印数据
+      if (old_e.is_leaf) {
+        printf("child te: leaf addr:%lx kv_len:%d partial:%d ", (uint64_t)old_e.addr(), old_e.kv_len, old_e.partial);
+
+        //  读取Leaf并打印
+        auto leaf_buffer = (dsm->get_rbuf(coro_id)).get_leaf_buffer();
+        is_valid = read_leaf(old_e.addr(), leaf_buffer, std::max((unsigned long)old_e.kv_len, sizeof(Leaf)), p_ptr, false, cxt, coro_id);
+        if (!is_valid) {
+          printf("invalid leaf node\n");
+          assert(false);
+        }
+        auto leaf = (Leaf *)leaf_buffer;
+        auto _k = leaf->get_key();
+        auto _v = leaf->get_value();
+        printf("leaf: k:%lx value:%lu \n", key2int(_k), _v);
+
+      } else {
+        printf("child te: internal addr:%lx node_type:%d partial:%d", (uint64_t)old_e.addr(), old_e.node_type, old_e.partial);
+        //  读取internal node加入到bfs
+        page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
+        is_valid = read_node(old_e, type_correct, page_buffer, p_ptr, depth,
+                             false, cxt, coro_id);
+        p_node = (InternalPage *)page_buffer;
+        bfs_res.push(std::make_tuple(*p_node, old_e.addr()));
+      }
+    }
+    bfs_res.pop();
+  }
+  printf("===================print end===============\n");
 }

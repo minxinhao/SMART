@@ -21,6 +21,7 @@
 // #define TREE_ENABLE_EMBEDDING_LOCK
 // #define TREE_TEST_HOCL_HANDOVER
 // #define TREE_ENABLE_IN_PLACE_UPDATE
+// #define TREE_ENABLE_ART
 
 /*
   Workloads
@@ -78,6 +79,9 @@ public:
 
   GlobalAddress get_root_ptr_ptr();
   InternalEntry get_root_ptr(CoroContext *cxt, int coro_id);
+
+  // 打印整个tree用于debug
+  void print(CoroContext *cxt, int coro_id);
 
 private:
   void coro_worker(CoroYield &yield, RequstGen *gen, WorkFunc work_func, int coro_id);

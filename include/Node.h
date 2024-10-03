@@ -22,6 +22,14 @@ static CRCProcessor crc_processor;
   Leaf Node
 */
 class Leaf {
+// rev_ptr:  8 bytes
+// valid:    1 bytes
+// checksum: 8 bytes
+// key :     8 bytes
+// value:    8 bytes
+// paddingL  7 bytes
+// lock:     8 bytes
+// total:    6 * 8 = 48 bytes
 public:
   // for invalidation
   GlobalAddress rev_ptr;
@@ -29,7 +37,7 @@ public:
 
   union {
   struct {
-  uint8_t f_padding   : 7;
+  uint64_t f_padding   : 63; // 让后面的lock_bytes起始地址8bytes对齐
   uint8_t valid       : 1;
   };
   uint8_t valid_byte;
@@ -45,16 +53,30 @@ public:
   };
 
   union {
-  struct {
-    uint8_t w_lock    : 1;
-    uint8_t r_padding : 7;
-  };
-  uint8_t lock_byte;
+    // struct {
+    //   uint8_t w_lock    : 1;
+    //   uint8_t r_padding : 7;
+    // };
+    // uint8_t lock_byte;
+    
+    struct {
+      uint8_t w_lock    : 1;
+      uint64_t r_padding : 63;
+    };
+    // 为了取代cas_mask，只能先这样设置
+    uint64_t lock_byte; 
   };
 
 public:
-  Leaf() {}
-  Leaf(const Key& key, const Value& value, const GlobalAddress& rev_ptr) : rev_ptr(rev_ptr), f_padding(0), valid(1), key(key), value(value), lock_byte(0) { set_consistent(); }
+  Leaf() { 
+    // printf("sizeof(Leaf):%ld\n",sizeof(Leaf));
+    assert(sizeof(Leaf) == 6 * 8);
+  }
+  Leaf(const Key& key, const Value& value, const GlobalAddress& rev_ptr) : rev_ptr(rev_ptr), f_padding(0), valid(1), key(key), value(value), lock_byte(0) { 
+    // printf("sizeof(Leaf):%ld\n",sizeof(Leaf));
+    assert(sizeof(Leaf) == 6 * 8);
+    set_consistent(); 
+  }
 
   const Key& get_key() const { return key; }
   Value get_value() const { return value; }
@@ -80,7 +102,8 @@ public:
   static Key remake_prefix(const Key& key, int depth, uint8_t diff_partial);
   static int longest_common_prefix(const Key &k1, const Key &k2, int depth);
 
-} __attribute__((packed));
+};
+//  __attribute__((packed));
 
 
 /*
@@ -170,6 +193,8 @@ public:
     for (int i = 0; i < partial_len; ++ i) partial[i] = get_partial(k, depth + i);
   }
 
+  Header(const Header& other):val(other.val){}
+
   operator uint64_t() { return val; }
 
   bool is_match(const Key& k) {
@@ -239,6 +264,8 @@ public:
   InternalEntry(NodeType node_type, const InternalEntry& e) :
                 partial(e.partial), empty(0), node_type(static_cast<uint8_t>(node_type)), is_leaf(e.is_leaf), packed_addr(e.packed_addr) {}
 
+  InternalEntry(const InternalEntry& other):val(other.val){}
+
   operator uint64_t() const { return val; }
 
   static InternalEntry Null() {
@@ -274,6 +301,13 @@ public:
   InternalPage(const Key &k, int partial_len, int depth, NodeType node_type, const GlobalAddress& rev_ptr) : rev_ptr(rev_ptr), hdr(k, partial_len, depth, node_type) {
     std::fill(records, records + 256, InternalEntry::Null());
   }
+
+  // 拷贝构造函数
+  // InternalPage(const InternalPage& other):rev_ptr(other.rev_ptr),hdr(other.hdr){
+  //   int num_record = num_to_node_type(other.hdr.type());
+  //   std::copy(other.records, other.records + num_record, records);
+  //   std::fill(records + num_record, records + 256, InternalEntry::Null());
+  // }
 
   bool is_valid(const GlobalAddress& p_ptr, int depth, bool from_cache) const { return hdr.type() != NODE_DELETED && hdr.depth <= depth && (!from_cache || p_ptr == rev_ptr); }
 } __attribute__((packed));

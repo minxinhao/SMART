@@ -97,6 +97,13 @@ public:
   std::pair<bool, bool> two_cas_mask_sync(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1, uint64_t mask_1,
                                           RdmaOpRegion &cas_ror_2, uint64_t equal_2, uint64_t val_2, uint64_t mask_2,
                                           CoroContext *ctx = nullptr);
+  
+  void two_cas(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1,
+                    RdmaOpRegion &cas_ror_2, uint64_t equal_2, uint64_t val_2,
+                    bool signal = true, CoroContext *ctx = nullptr);
+  std::pair<bool, bool> two_cas_sync(RdmaOpRegion &cas_ror_1, uint64_t equal_1, uint64_t val_1,
+                                          RdmaOpRegion &cas_ror_2, uint64_t equal_2, uint64_t val_2,
+                                          CoroContext *ctx = nullptr);
 
   void cas_mask(GlobalAddress gaddr, uint64_t equal, uint64_t val,
                 uint64_t *rdma_buffer, uint64_t mask = ~(0ull),

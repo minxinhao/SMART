@@ -606,6 +606,43 @@ bool rdmaWriteCas(ibv_qp *qp, const RdmaOpRegion &write_ror,
   return true;
 }
 
+bool rdmaTwoCas(ibv_qp *qp, const RdmaOpRegion &cas_ror_1, uint64_t compare_1, uint64_t swap_1, 
+                    const RdmaOpRegion &cas_ror_2, uint64_t compare_2, uint64_t swap_2,
+                    bool isSignaled, uint64_t wrID) {
+
+  struct ibv_sge sg[2];
+  struct ibv_send_wr wr[2];
+  struct ibv_send_wr *wrBad;
+
+  fillSgeWr(sg[0], wr[0], cas_ror_1.source, 8, cas_ror_1.lkey);
+  wr[0].opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+  wr[0].wr.atomic.remote_addr = cas_ror_1.dest;
+  wr[0].wr.atomic.rkey = cas_ror_1.remoteRKey;
+  wr[0].wr.atomic.compare_add = compare_1;
+  wr[0].wr.atomic.swap = swap_1;
+  wr[0].wr_id = wrID;
+  wr[0].next = &wr[1];
+
+  fillSgeWr(sg[1], wr[1], cas_ror_2.source, 8, cas_ror_2.lkey);
+  wr[1].opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+  wr[1].wr.atomic.remote_addr = cas_ror_2.dest;
+  wr[1].wr.atomic.rkey = cas_ror_2.remoteRKey;
+  wr[1].wr.atomic.compare_add = compare_2;
+  wr[1].wr.atomic.swap = swap_2;
+  wr[1].wr_id = wrID;
+
+  if (isSignaled) {
+    wr[1].send_flags |= IBV_SEND_SIGNALED;
+  }
+
+  if (ibv_post_send(qp, &wr[0], &wrBad)) {
+    Debug::notifyError("Send with Write Faa failed.");
+    sleep(10);
+    return false;
+  }
+  return true;
+}
+
 // 只使用不带mask的接口
 bool rdmaWriteCasMask(ibv_qp *qp, const RdmaOpRegion &write_ror,
                   const RdmaOpRegion &cas_ror, uint64_t compare, uint64_t swap, uint64_t mask,
