@@ -84,7 +84,7 @@ InternalEntry Tree::get_root_ptr(CoroContext *cxt, int coro_id) {
 }
 
 
-void Tree::insert(const Key &k, Value v, CoroContext *cxt, int coro_id, bool is_update, bool is_load) {
+void Tree::insert(const Key &k, Value v, int cnt, CoroContext *cxt, int coro_id, bool is_update, bool is_load) {
   assert(dsm->is_register());
 
   // handover
@@ -114,8 +114,9 @@ void Tree::insert(const Key &k, Value v, CoroContext *cxt, int coro_id, bool is_
   int max_num;
   uint64_t* cas_buffer;
   int debug_cnt = 0;
+  int min_retry_cnt = 0;
 
-  // this->print(cxt, coro_id);
+  // this->print(cxt, coro_id,cnt);
   uint64_t int_k = key2int(k);
   // if (int_k == 3232700585171816769) printf("target\n");
 #ifdef TREE_ENABLE_WRITE_COMBINING
@@ -157,9 +158,14 @@ void Tree::insert(const Key &k, Value v, CoroContext *cxt, int coro_id, bool is_
 #else
   UNUSED(is_update);  // is_update is only used in ROWEX_ART baseline
 #endif
-
 next:
+  min_retry_cnt++;
   retry_cnt[dsm->getMyThreadID()][retry_flag] ++;
+
+  if(min_retry_cnt > 100){
+    printf("thread:%d retry_cnt:%d retry_flag:%d cnt:%d\n",dsm->getMyThreadID(),min_retry_cnt,retry_flag,cnt);
+    exit(-1);
+  }
 
   // 1. If we are at a NULL node, inject a leaf
   if (p == InternalEntry::Null()) {
@@ -250,6 +256,7 @@ next:
     bool res = out_of_place_write_node(k, v, depth, leaf_addr, partial_len, diff_partial, p_ptr, p, node_ptr, cas_buffer, cxt, coro_id);
     // cas fail, retry
     if (!res) {
+      // printf(" cas insert internal node fail\n");
       p = *(InternalEntry*) cas_buffer;
       retry_flag = CAS_LEAF;
       goto next;
@@ -260,7 +267,7 @@ next:
   // 3. Find out a node
   // 3.1 read the node
   page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
-  is_valid = read_node(p, type_correct, page_buffer, p_ptr, depth, from_cache, cxt, coro_id);
+  is_valid = read_node(p, type_correct, page_buffer, p_ptr, depth, from_cache, cxt, coro_id,cnt>140000);
   p_node = (InternalPage *)page_buffer;
 
   if (!is_valid) {  // node deleted || outdated cache entry in cached node
@@ -313,8 +320,9 @@ next:
       // udpate cas header. Optimization: no need to snyc; mask node_type
       auto header_buffer = (dsm->get_rbuf(coro_id)).get_header_buffer();
       auto new_hdr = Header::split_header(hdr, i);
+      new_hdr.node_type = hdr.node_type;
       // dsm->cas_mask(GADD(p.addr(), sizeof(GlobalAddress)), (uint64_t)hdr, (uint64_t)new_hdr, header_buffer, ~Header::node_type_mask, false, cxt);
-
+      // printf("cas page:%lx header:%lx frome old:depth:%d type:%d to new:depth:%d type:%d \n",(uint64_t)p.addr(),(uint64_t)GADD(p.addr(), sizeof(GlobalAddress)),(int)hdr.depth,(int)hdr.node_type,(int)new_hdr.depth,(int)new_hdr.node_type);
       dsm->cas(GADD(p.addr(), sizeof(GlobalAddress)), (uint64_t)hdr, (uint64_t)new_hdr, header_buffer, false, cxt);
       goto insert_finish;
     }
@@ -703,7 +711,7 @@ bool Tree::out_of_place_write_leaf(const Key &k, Value &v, int depth, GlobalAddr
   // cas entry
   auto new_e = InternalEntry(partial_key, sizeof(Leaf) < 128 ? sizeof(Leaf) : 0, leaf_addr);
   auto remote_cas = [=](){
-    // printf("insert leaf:%lx behind intern:%lx \n",(uint64_t)leaf_addr,(uint64_t)e_ptr);
+    // printf("insert leaf entry:%lx at intern:%lx \n",(uint64_t)leaf_addr,(uint64_t)e_ptr);
     return dsm->cas_sync(e_ptr, (uint64_t)old_e, (uint64_t)new_e, ret_buffer, cxt);
   };
 
@@ -716,7 +724,7 @@ bool Tree::out_of_place_write_leaf(const Key &k, Value &v, int depth, GlobalAddr
 
 
 bool Tree::read_node(InternalEntry &p, bool& type_correct, char *node_buffer, const GlobalAddress& p_ptr, int depth, bool from_cache,
-                     CoroContext *cxt, int coro_id) {
+                     CoroContext *cxt, int coro_id, bool debug) {
   auto read_size = sizeof(GlobalAddress) + sizeof(Header) + node_type_to_num(p.type()) * sizeof(InternalEntry);
   dsm->read_sync(node_buffer, p.addr(), read_size, cxt);
   auto p_node = (InternalPage *)node_buffer;
@@ -741,15 +749,32 @@ bool Tree::read_node(InternalEntry &p, bool& type_correct, char *node_buffer, co
     dsm->cas(p.addr(), p_node->rev_ptr, p_ptr, cas_buffer, false, cxt);
     // dsm->cas_sync(p.addr(), p_node->rev_ptr, p_ptr, cas_buffer, cxt);
   }
+  if(p.node_type == 0){
+    printf("read node: p_ptr:%lx addr:%lx type:%d rev_ptr:%lx header: depth:%d type:%d partial_size:%d  expected: depth:%d \n", (uint64_t)p_ptr,
+          (uint64_t)p.addr(),p.node_type,(uint64_t)p_node->rev_ptr,p_node->hdr.depth,p_node->hdr.node_type,p_node->hdr.partial_len,depth);
+    
+    for(int i = 0 ; i < 4 ; i++){
+      auto& recd = p_node->records[i];
+      printf("records[%d]: partial:%x is_leaf:%d kv_len:%d child_ptr:%lx\n",i,recd.partial,recd.is_leaf,recd.kv_len,(uint64_t)recd.addr());
+    }
+    fflush(stdout);
+    exit(-1);
+  } 
   return p_node->is_valid(p_ptr, depth, from_cache);
 }
 
 
-// 生成一系列的internal node，用于足够存放partial_len对应的partial
-// 
+// leaf_split/header split： 
+// 对指向e_ptr处的old_e进行split，创建新的一个中间节点，存放old_e和leaf_addr
+// 指向old_e的指针partial为diff_partial, 指向leaf_addr的partial为传入的depth+partial_len
+// 如果一个中间节点放不下partial_len的partial,进一步生成足够的上层中间节点，存放partial
+// 更新e_ptr中的内容从old_e到新的中间节点
+// node_addr，没用到
 bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddress& leaf_addr, int partial_len, uint8_t diff_partial,
                                    const GlobalAddress &e_ptr, const InternalEntry &old_e, const GlobalAddress& node_addr,
                                    uint64_t *ret_buffer, CoroContext *cxt, int coro_id) {
+  static int func_cnt = 0;
+  func_cnt++;
   // 在header中，partial数组部分是6 bytes，也就是最多只能存放6段partial。
   // hPartialLenMax = 6，
   // 额外+1是因为尾部有一个额外的+1，对与刚好6段的也进行兼容。
@@ -781,7 +806,7 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
   NodeType nodes_type = num_to_node_type(2);
   InternalPage ** node_pages = new InternalPage* [new_node_num];
   auto rev_ptr = e_ptr;
-  // printf("alloc %d intern node\n",new_node_num);
+  // printf("alloc %d intern node depth:%d\n",new_node_num,depth);
   for (int i = 0; i < new_node_num - 1; ++ i) {
     auto node_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
     node_pages[i] = new (node_buffer) InternalPage(k, define::hPartialLenMax, depth, nodes_type, rev_ptr);
@@ -793,13 +818,14 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
 
     // auto& intern_page = node_pages[i];
     // auto& hdr = intern_page->hdr;
-    // printf("node:%d ptr:%lx rev_ptr:%lx depth:%d node_type:%d partial_len:%d partial:",i,(uint64_t)node_addrs[i],(uint64_t)intern_page->rev_ptr,hdr.depth,hdr.type(),hdr.partial_len);
+    // printf("node:%d ptr:%lx rev_ptr:%lx depth:%d node_type:%d num_slot:%d partial_len:%d partial:",
+    //       i,(uint64_t)node_addrs[i],(uint64_t)intern_page->rev_ptr,hdr.depth,hdr.type(),num_to_node_type(hdr.type()),hdr.partial_len);
     // for(int j = 0 ; j < hdr.partial_len; j++){
     //   printf(" %x",hdr.partial[j]);
     // }
     // printf("\n");
     // auto& recd = intern_page->records[0];
-    // printf("records[0]: partial:%x is_leaf:%d node_type:%d child_ptr:%lx\n",recd.partial,recd.is_leaf,recd.type(),(uint64_t)recd.addr());
+    // printf("records[0]: partial:%x intern node node_type:%d child_ptr:%lx\n",recd.partial,recd.type(),(uint64_t)recd.addr());
   }
 
   // insert the two leaf into the last node
@@ -808,17 +834,21 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
   node_pages[new_node_num - 1]->records[0] = InternalEntry(diff_partial, old_e);
   node_pages[new_node_num - 1]->records[1] = InternalEntry(get_partial(k, depth + partial_len),
                                                            sizeof(Leaf) < 128 ? sizeof(Leaf) : 0, leaf_addr);
-  // auto& intern_page = node_pages[new_node_num-1];
+  // auto intern_page = node_pages[new_node_num-1];
   // auto& hdr = intern_page->hdr;
-  // printf("node:%d ptr:%lx rev_ptr:%lx depth:%d node_type:%d partial_len:%d partial:",new_node_num-1,(uint64_t)node_addrs[new_node_num-1],(uint64_t)intern_page->rev_ptr,hdr.depth,hdr.type(),hdr.partial_len);
+  // printf("node:%d ptr:%lx rev_ptr:%lx depth:%d node_type:%d num_slot:%d partial_len:%d partial:",new_node_num-1,(uint64_t)node_addrs[new_node_num-1],(uint64_t)intern_page->rev_ptr,hdr.depth,hdr.type(),node_type_to_num(hdr.type()),hdr.partial_len);
   // for(int j = 0 ; j < hdr.partial_len; j++){
   //   printf(" %x",hdr.partial[j]);
   // }
   // printf("\n");
-  // auto& recd = intern_page->records[0];
-  // auto& recd2 = intern_page->records[1];
-  // printf("records[0]: partial:%x is_leaf:%d kv_len:%d child_ptr:%lx\n",recd.partial,recd.is_leaf,recd.kv_len,(uint64_t)recd.addr());
-  // printf("records[1]: partial:%x is_leaf:%d kv_len:%d child_ptr:%lx\n",recd2.partial,recd2.is_leaf,recd2.kv_len,(uint64_t)recd2.addr());
+  // for(int i = 0 ; i < 2 ; i++){
+  //   auto& recd = intern_page->records[i];
+  //   if(recd.is_leaf)
+  //     printf("records[%d]: partial:%x leaf child_ptr:%lx\n",i,recd.partial,(uint64_t)recd.addr());
+  //   else
+  //     printf("records[%d]: partial:%x intern node node_type:%d child_ptr:%lx\n",i,recd.partial,recd.type(),(uint64_t)recd.addr());
+  // }
+  // fflush(stdout);
   
   // init the parent entry
   auto new_e = InternalEntry(old_e.partial, nodes_type, node_addrs[0]);
@@ -843,6 +873,7 @@ bool Tree::out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddr
 
   // cas
   auto remote_cas = [=](){
+    // printf("cas e_ptr:%lx old_e:addr:%lx is_leaf:%d new_e:addr:%lx type:%d\n",(uint64_t)e_ptr,(uint64_t)old_e.addr(),old_e.is_leaf,(uint64_t)new_e.addr(),new_e.type());
     return dsm->cas_sync(e_ptr, (uint64_t)old_e, (uint64_t)new_e, ret_buffer, cxt);
   };
   auto reclaim_memory = [=](){
@@ -900,20 +931,25 @@ void Tree::cas_node_type(NodeType next_type, GlobalAddress p_ptr, InternalEntry 
     Header new_hdr(hdr);
     new_hdr.node_type = next_type;
     auto [cas_1,cas_2] = dsm->two_cas_sync(rs[0], (uint64_t)p, (uint64_t)new_e, rs[1], (uint64_t)hdr, (uint64_t)new_hdr, cxt);
-
+    // printf("cas entry:%lx's node_type from:%d to %d. cas header(node:%lx):%lx type from %d to %d\n",
+    //         (uint64_t)p_ptr,(int)p.node_type,(int)new_e.node_type,(uint64_t)node_addr,(uint64_t)header_addr,(int)hdr.node_type,(int)new_hdr.node_type);
     return std::make_pair(cas_1,cas_2);
   };
 
   // only cas old_entry
   auto remote_cas_entry = [=, &p_ptr, &p](){
     auto new_e = InternalEntry(next_type, p);
+    // printf("cas entry:%lx's node_type from:%d to %d.",(uint64_t)p_ptr,(int)p.node_type,(int)new_e.node_type);
     return dsm->cas_sync(p_ptr, (uint64_t)p, (uint64_t)new_e, cas_buffer_1, cxt);
   };
 
   // only cas node_header
   auto remote_cas_header = [=, &hdr](){
     // return dsm->cas_mask_sync(header_addr, hdr, Header(next_type), cas_buffer_2, Header::node_type_mask, cxt);
-    return dsm->cas_sync(header_addr, hdr, Header(next_type), cas_buffer_2, cxt);
+    Header new_hdr(hdr);
+    new_hdr.node_type = next_type;
+    // printf("cas header:%lx type from %d to %d\n",(uint64_t)header_addr,(int)hdr.node_type,(int)new_hdr.node_type);
+    return dsm->cas_sync(header_addr, (uint64_t)hdr,(uint64_t)new_hdr, cas_buffer_2, cxt);
   };
 
   // read down to find target entry when split
@@ -1639,8 +1675,7 @@ void Tree::print(CoroContext *cxt, int coro_id){
   // 1. Find out a node
   // 1.1 read the node
   page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
-  is_valid = read_node(p, type_correct, page_buffer, p_ptr, depth, false, cxt,
-                       coro_id);
+  is_valid = read_node(p, type_correct, page_buffer, p_ptr, depth, false, cxt,coro_id);
   p_node = (InternalPage *)page_buffer;
   if (!is_valid) {  // node deleted || outdated cache entry in cached node
     printf("invalid root node\n");
@@ -1655,19 +1690,23 @@ void Tree::print(CoroContext *cxt, int coro_id){
     printf("internal node: ptr:%lx revese_ptr:%lx depth:%d node_type:%d num_slot:%d partilen:%d\n",(uint64_t)cur_node_ptr, (uint64_t)cur_intern_page.rev_ptr, hdr.depth, hdr.node_type, num_slot, hdr.partial_len);
     printf("partial:");
     for (int i = 0; i < hdr.partial_len; i++) {
-      printf(" %d", hdr.partial[i]);
+      printf(" %x", hdr.partial[i]);
     }
     printf("\n");
 
     auto slot_ptr = GADD(cur_node_ptr, sizeof(GlobalAddress) + sizeof(Header));
     depth = hdr.depth;
     for (int i = 0; i < num_slot; i++) {
-      auto &old_e = p_node->records[i];
-      if(old_e == InternalEntry::Null()) break;
+      auto &old_e = cur_intern_page.records[i];
+      if(old_e == InternalEntry::Null()){
+        printf("null te\n");
+        continue;
+      }
+      
       auto p_ptr = GADD(slot_ptr, i * sizeof(InternalEntry));
       // 打印数据
       if (old_e.is_leaf) {
-        printf("child te: leaf addr:%lx kv_len:%d partial:%d ", (uint64_t)old_e.addr(), old_e.kv_len, old_e.partial);
+        printf("child te(:%lx): leaf addr:%lx kv_len:%d partial:%x ",(uint64_t)p_ptr, (uint64_t)old_e.addr(), old_e.kv_len, old_e.partial);
 
         //  读取Leaf并打印
         auto leaf_buffer = (dsm->get_rbuf(coro_id)).get_leaf_buffer();
@@ -1682,16 +1721,193 @@ void Tree::print(CoroContext *cxt, int coro_id){
         printf("leaf: k:%lx value:%lu \n", key2int(_k), _v);
 
       } else {
-        printf("child te: internal addr:%lx node_type:%d partial:%d", (uint64_t)old_e.addr(), old_e.node_type, old_e.partial);
+        printf("child te(%lx): internal addr:%lx node_type:%d partial:%x\n",(uint64_t)p_ptr, (uint64_t)old_e.addr(), old_e.node_type, old_e.partial);
         //  读取internal node加入到bfs
         page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
-        is_valid = read_node(old_e, type_correct, page_buffer, p_ptr, depth,
-                             false, cxt, coro_id);
-        p_node = (InternalPage *)page_buffer;
-        bfs_res.push(std::make_tuple(*p_node, old_e.addr()));
+        is_valid = read_node(old_e, type_correct, page_buffer, p_ptr, depth+1, false, cxt, coro_id);
+        if (!is_valid) {
+            printf("invalid intern node\n");
+            assert(false);
+        }
+        bfs_res.push(std::make_tuple(*(InternalPage *)page_buffer, old_e.addr()));
       }
     }
     bfs_res.pop();
   }
   printf("===================print end===============\n");
+}
+
+
+void Tree::print(CoroContext *cxt, int coro_id, int cnt) {
+    // File name based on cnt
+    int thread_id = dsm->getMyThreadID();
+    std::ostringstream filename;
+    filename << "tree_output_" << thread_id << "_" << coro_id << "_" << cnt << ".txt";
+    std::ofstream outfile(filename.str(), std::ios::out);
+
+    // traversal
+    GlobalAddress p_ptr;
+    InternalEntry p;
+    GlobalAddress node_ptr;  // node address (excluding header)
+    int depth;
+
+    // temp
+    GlobalAddress leaf_addr = GlobalAddress::Null();
+    char *page_buffer;
+    bool is_valid, type_correct;
+    InternalPage *p_node = nullptr;
+    Header hdr;
+    int max_num;
+
+    p_ptr = root_ptr_ptr;
+    p = get_root_ptr(cxt, coro_id);
+    node_ptr = root_ptr_ptr;
+    depth = 0;
+    std::queue<std::tuple<InternalPage, GlobalAddress>> bfs_res;
+    int leaf_cnt = 0 ;
+    
+    outfile << "===================print start===============\n";
+    if (p == InternalEntry::Null()) {
+        outfile << "Tree is null: root_ptr_ptr: " << std::hex << (uint64_t)root_ptr_ptr << "\n";
+        outfile << "===================print end===============\n";
+        outfile.close();
+        return;
+    }
+
+    if (p.is_leaf) {
+        auto leaf_buffer = (dsm->get_rbuf(coro_id)).get_leaf_buffer();
+        is_valid = read_leaf(p.addr(), leaf_buffer,
+                             std::max((unsigned long)p.kv_len, sizeof(Leaf)), p_ptr,
+                             false, cxt, coro_id);
+        if (!is_valid) {
+            outfile << "invalid leaf node\n";
+            assert(false);
+        }
+
+        outfile << "root with only one leaf\n";
+        outfile << "root: leaf addr:" << std::hex << (uint64_t)p.addr()
+                << " kv_len:" << std::dec << static_cast<int>(p.kv_len) // Cast bitfield to int
+                << " partial:" << std::hex << static_cast<int>(p.partial) // Cast bitfield to int
+                << "\n";
+        auto leaf = (Leaf *)leaf_buffer;
+        auto _k = leaf->get_key();
+        auto _v = leaf->get_value();
+        outfile << "leaf: k:" << std::hex << key2int(_k) << " value:" << _v << "\n";
+        outfile << "===================print end===============\n";
+        outfile.close();
+        return;
+    }
+
+    outfile << "root_node(" << std::hex << (uint64_t)p_ptr << "): addr:" << (uint64_t)p.addr()
+            << " type:" << static_cast<int>(p.type())  // Cast bitfield to int
+            << " is_leaf:" << p.is_leaf << "\n";
+    depth++;  // partial key in entry is matched
+    page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
+    is_valid = read_node(p, type_correct, page_buffer, p_ptr, depth, false, cxt, coro_id);
+    p_node = (InternalPage *)page_buffer;
+    if (!is_valid) {
+        outfile << "invalid root node\n";
+        assert(false);
+    }
+    bfs_res.push(std::make_tuple(*p_node, p.addr()));
+
+    bool exit_flag = false;
+    while (!bfs_res.empty()) {
+        auto &[cur_intern_page, cur_node_ptr] = bfs_res.front();
+        auto &hdr = cur_intern_page.hdr;
+        auto num_slot = node_type_to_num(hdr.type());
+        outfile << "internal node: ptr:" << std::hex << (uint64_t)cur_node_ptr
+                << " reverse_ptr:" << (uint64_t)cur_intern_page.rev_ptr
+                << " depth:" << std::dec << static_cast<int>(hdr.depth )
+                << " node_type:" << static_cast<int>(hdr.node_type)  // Cast bitfield to int
+                << " num_slot:" << num_slot << " partilen:" << hdr.partial_len << "\n";
+
+        outfile << "partial:";
+        for (int i = 0; i < hdr.partial_len; i++) {
+            outfile << " " << std::hex << static_cast<int>(hdr.partial[i]);  // Proper casting
+        }
+        outfile << "\n";
+
+        auto slot_ptr = GADD(cur_node_ptr, sizeof(GlobalAddress) + sizeof(Header));
+        depth = hdr.depth;
+        for (int i = 0; i < num_slot; i++) {
+            auto &old_e = cur_intern_page.records[i];
+            if (old_e == InternalEntry::Null()) break;
+            auto p_ptr = GADD(slot_ptr, i * sizeof(InternalEntry));
+
+            if (old_e.is_leaf) {
+                leaf_cnt++;
+                outfile << "child te()"<< std::hex << (uint64_t)p_ptr << " : leaf addr:" << std::hex << (uint64_t)old_e.addr()
+                        << " kv_len:" << std::dec << static_cast<int>(old_e.kv_len)  // Cast bitfield to int
+                        << " partial: " << std::hex << static_cast<int>(old_e.partial)  // Cast bitfield to int
+                        ;
+
+                auto leaf_buffer = (dsm->get_rbuf(coro_id)).get_leaf_buffer();
+                is_valid = read_leaf(old_e.addr(), leaf_buffer,
+                                     std::max((unsigned long)old_e.kv_len, sizeof(Leaf)), p_ptr, false, cxt, coro_id);
+                if (!is_valid) {
+                    outfile << "invalid leaf node\n";
+                    assert(false);
+                }
+
+                auto leaf = (Leaf *)leaf_buffer;
+                auto _k = leaf->get_key();
+                auto _v = leaf->get_value();
+                outfile << "leaf: rev_ptr:%lx"<<std::hex << (uint64_t)leaf->rev_ptr<<" k:" << std::hex << key2int(_k) << " value:" << _v << "\n";
+
+            } else {
+                outfile << "child te"<< std::hex << (uint64_t)p_ptr<<" : internal addr:" << std::hex << (uint64_t)old_e.addr()
+                        << " node_type:" << static_cast<int>(old_e.node_type)  // Cast bitfield to int
+                        << " partial:" << static_cast<int>(old_e.partial)  // Cast bitfield to int
+                        << "\n";
+
+                page_buffer = (dsm->get_rbuf(coro_id)).get_page_buffer();
+                is_valid = read_node(old_e, type_correct, page_buffer, p_ptr, depth+1, false, cxt, coro_id);
+                if (!is_valid) {
+                    outfile << "invalid intern node\n";
+                    auto intern_page = (InternalPage*)page_buffer;
+                    auto& hdr = intern_page->hdr;
+                    outfile << "ptr: " << std::hex << (uint64_t)old_e.addr()
+                            << " rev_ptr: " << std::hex << (uint64_t)intern_page->rev_ptr
+                            << " depth: " << std::dec << static_cast<int>(hdr.depth)
+                            << " node_type: " << static_cast<int>(hdr.type())
+                            << " num_slot: " << num_to_node_type(hdr.type())
+                            << " partial_len: " << static_cast<int>(hdr.partial_len)
+                            << " partial:";
+                    for (int j = 0; j < hdr.partial_len; j++) {
+                        outfile << " " << std::hex << (int)hdr.partial[j];  // Cast partial to int for proper output
+                    }
+                    outfile << "\n";
+
+                    for(int i = 0 ; i < 256; i++){
+                      auto &recd = intern_page->records[i];
+                      if(recd == InternalEntry::Null()) break;
+                      outfile << i << ": partial: " << std::hex << static_cast<int>(recd.partial)
+                              << " is_leaf: " << static_cast<int>(recd.is_leaf)
+                              // << " node_type: " << static_cast<int>(recd.type())  // Cast bitfield to int
+                              << " child_ptr: " << std::hex << (uint64_t)recd.addr()
+                              << "\n";
+                    }
+                    
+                    exit_flag = true;
+                    break;
+                }
+                bfs_res.push(std::make_tuple(*(InternalPage *)page_buffer, old_e.addr()));
+            }
+        }
+        if(exit_flag) break;
+        bfs_res.pop();
+    }
+    outfile << "===================print end===============\n";
+    outfile.close();
+    if(leaf_cnt < cnt){
+      printf("leaf_cnt:%d cnt:%d\n",leaf_cnt,cnt);
+      fflush(stdout);
+      exit(-1);
+    }
+    if(exit_flag){
+      printf("exit flag\n");
+      fflush(stdout);
+      exit(-1);
+    }
 }

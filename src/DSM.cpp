@@ -31,6 +31,8 @@ DSM *DSM::getInstance(const DSMConfig &conf) {
   return dsm;
 }
 
+// 分配dsm内存和cache内存
+// 
 DSM::DSM(const DSMConfig &conf)
     : conf(conf), appID(0), cache(conf.cacheConfig) {
 
@@ -68,8 +70,10 @@ void DSM::registerThread() {
 
   iCon = thCon[thread_id];
 
-  iCon->message->initRecv();
+  printf("thread_id:%d registerThread start\n",thread_id);
+  iCon->message->initRecv(thread_id);
   iCon->message->initSend();
+  printf("registerThread end\n");
   rdma_buffer = (char *)cache.data + thread_id * define::kPerThreadRdmaBuf;
 
   for (int i = 0; i < MAX_CORO_NUM; ++i) {
@@ -120,15 +124,18 @@ void DSM::initRDMAConnection() {
     thCon[i] =
         new ThreadConnection(i, (void *)cache.data, cache.size * define::GB,
                              conf.machineNR, remoteInfo);
+    printf("init thCon:%d\n",i);
   }
 
   for (int i = 0; i < NR_DIRECTORY; ++i) {
     dirCon[i] =
         new DirectoryConnection(i, (void *)baseAddr, conf.dsmSize * define::GB,
                                 conf.machineNR, remoteInfo);
+    printf("init dirCon:%d\n",i);
   }
 
   keeper = new DSMKeeper(thCon, dirCon, remoteInfo, conf.machineNR);
+  printf("init DSMKeeper\n");
   myNodeID = keeper->getMyNodeID();
 }
 

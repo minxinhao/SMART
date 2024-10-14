@@ -48,7 +48,7 @@ class CMDManager(object):
         port = 22
         cli = paramiko.SSHClient()
         cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        cli.connect(hostname, port, compress=True)
+        cli.connect(hostname, port,username='mxh', password='mxh', compress=True)
         return cli
 
     @func_set_timeout(60)

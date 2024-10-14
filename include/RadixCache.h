@@ -16,6 +16,11 @@
 
 // #define CACHE_ENABLE_ART
 
+// CacheEntry封装了一个internal page的depth, revr_ptr, internal entries
+// CacheNodeValue封装一个CacheEntry和next指针
+// 理解了一下，之前搞混了。
+// 这里CacheEntry存放对应ART中，到此为止的prefix的key对应的远端Node缓存值。
+// 而next则是这个ART本身中，这个prefix对应的下一集CacheNode。
 struct CacheNodeValue {
   volatile CacheEntry* cache_entry;
   volatile void * next;
@@ -26,6 +31,7 @@ struct CacheNodeValue {
 };
 
 
+// 存放depth和partial
 class CacheHeader {
 public:
   uint8_t depth;
@@ -33,12 +39,14 @@ public:
 
   CacheHeader() : depth(0) {}
 
+  // 使用byte_array中depth开始的partial_len个内容，加上depth，构造一个Header
   CacheHeader(const std::vector<uint8_t>& byte_array, int depth, int partial_len) : depth(depth) {
     for (int i = 0; i < partial_len; ++ i) {
       partial.push_back(byte_array[depth + i]);
     }
   }
-
+  
+  // 使用old_hdr中diff_idx之后的内容生成一个新header
   static CacheHeader* split_header(const CacheHeader* old_hdr, int diff_idx) {
     auto new_hdr = new CacheHeader();
     for (int i = diff_idx + 1; i < (int)old_hdr->partial.size(); ++ i) new_hdr->partial.push_back(old_hdr->partial[i]);
@@ -62,12 +70,17 @@ using CacheMap = tbb::concurrent_unordered_map<uint8_t, CacheNodeValue, no_hash>
 
 /*
   node: [header, records]
+  header: depth partial
+  records: partial到CacheNodeValue，也就是具体internal page
 */
 class CacheNode {
 public:
   volatile CacheHeader* header;
   CacheMap records;  // value is const
 
+  // node: [header, records]
+  // header: depth partial
+  // records: partial到CacheNodeValue，也就是具体internal page
   CacheNode() {
     header = new CacheHeader();
   }
@@ -79,6 +92,14 @@ public:
   }
 
   // split internal node
+  // // 从old CacheNode的头开始（start实际上是这个值），使用partial_len个partial构建CacheHeader
+  // 如果partial_1和partial_2相等，对应于要插入的New CacheNode prefix超出当前旧CacheNode
+  // 只需要构建一个新CacheNode，缓存传入的CacheEntry，同时next指向原有的old node（应该同时要对old node的depth、partial进行修改？）看了一下，是在这里返回的NewNode写入成功之后修改的
+  // 如果partial_1和partial_2不相等，对应于header split
+  // 则创建两个CacheNode，分别为{nullptr,old_node}，存放以前的old node
+  // 和一个{new_entry,nullptr}（对完全包含byte_array的情况）
+  // 或{nullptr,{byte_array, start + partial_len + 1, new_entry}},对放不下的情况
+  // 这里不用判断byte_array是否能被下一个node存放完吗？
   CacheNode(const std::vector<uint8_t>& byte_array, int start, int partial_len,
             uint8_t partial_1, CacheNode* next_node, uint8_t partial_2, CacheEntry* new_entry, CacheNode* &nested_node) {
     header = new CacheHeader(byte_array, start, partial_len);
@@ -109,6 +130,7 @@ public:
 /*
   This class is used to calculate the cache memory consumption
   so as to trigger eviction.
+  维护剩余的free-size和所有CacheNode的大小
 */
 class FreeMemManager {
 public:
@@ -162,6 +184,8 @@ struct SearchRet {
 };
 
 
+// 使用一个naive art，也就是不带压缩和并发优化的art实现的cache
+// 这里的问题在于如何处理并发访问
 class RadixCache {
 
 public:

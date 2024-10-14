@@ -35,17 +35,23 @@ void DSMKeeper::initLocalMeta() {
 
 bool DSMKeeper::connectNode(uint16_t remoteID) {
 
+  printf("connect node:%d start\n",remoteID);
   setDataToRemote(remoteID);
 
   std::string setK = setKey(remoteID);
+  printf("memcached set key:%s\n",setK.c_str());
   memSet(setK.c_str(), setK.size(), (char *)(&localMeta), sizeof(localMeta));
 
   std::string getK = getKey(remoteID);
+  printf("memcached get key:%s\n",getK.c_str());
+  // 此处memGet会阻塞，一直等到对应的compute server设置了对应的setKey
   ExchangeMeta *remoteMeta = (ExchangeMeta *)memGet(getK.c_str(), getK.size());
 
+  printf("3\n");
   setDataFromRemote(remoteID, remoteMeta);
 
   free(remoteMeta);
+  printf("connect node:%d end\n",remoteID);
   return true;
 }
 

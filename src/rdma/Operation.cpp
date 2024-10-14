@@ -223,6 +223,8 @@ bool rdmaWrite(ibv_qp *qp, uint64_t source, uint64_t dest, uint64_t size,
   wr.wr.rdma.rkey = remoteRKey;
   wr.wr_id = wrID;
 
+  // printf("wr:addr:%lx opcode:%d rdma.remote_addr:%lx sge_list:%lx num_sge:%d sge_addr:%lx sge_len:%d next:%lx\n", (uint64_t)&wr,wr.opcode,wr.wr.rdma.remote_addr,(uint64_t)wr.sg_list,wr.num_sge,wr.sg_list->addr,wr.sg_list->length,(uint64_t)wr.next);
+
   if (ibv_post_send(qp, &wr, &wrBad) != 0) {
     Debug::notifyError("Send with RDMA_WRITE(WITH_IMM) failed.");
     sleep(10);

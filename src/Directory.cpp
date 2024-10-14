@@ -29,7 +29,8 @@ Directory::~Directory() { delete chunckAlloc; }
 
 void Directory::dirThread() {
 
-  bindCore((CPU_PHYSICAL_CORE_NUM - 1 - dirID) * 2 + 1);  // bind to the last CPU core
+  // bindCore((CPU_PHYSICAL_CORE_NUM - 1 - dirID) * 2 + 1);  // bind to the last CPU core
+  bindCore((CPU_PHYSICAL_CORE_NUM - 1 - dirID) + 1);  // bind to the last CPU core
   Debug::notifyInfo("dir %d launch!\n", dirID);
 
   while (true) {
@@ -41,6 +42,7 @@ void Directory::dirThread() {
     {
 
       auto *m = (RawMessage *)dCon->message->getMessage();
+      printf("get message\n");
 
       process_message(m);
 

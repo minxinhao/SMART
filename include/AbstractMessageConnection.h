@@ -43,7 +43,7 @@ public:
                             uint32_t messageNR);
   ~AbstractMessageConnection();
 
-  void initRecv();
+  void initRecv(int id);
 
   char *getMessage();
   char *getSendPool();

@@ -11,6 +11,8 @@
 
 /*
   For node granularity cache, realize by concurrent_unordered_map. [key prefix -> cache node]
+  depth, recv_ptr, records
+  internal-page
 */
 struct CacheEntry {
   // fixed
@@ -21,6 +23,10 @@ struct CacheEntry {
   // volatile mutable uint64_t counter;
 
   CacheEntry() {}
+  // internal-page
+  // depth, recv_ptr, InternalEntry
+  // depth:p_node.depth + p_node.partial_len
+  // rev_ptr:addr, internal entries: p_node's internal entries
   CacheEntry(const InternalPage* p_node, const GlobalAddress& addr) :
              depth(p_node->hdr.depth + p_node->hdr.partial_len), addr(addr) {
     for (int i = 0; i < node_type_to_num(p_node->hdr.type()); ++ i) {

@@ -1,0 +1,18 @@
+43329	out_of_place_write_leaf alloc leaf: addr offset:1872e000000
+43330	insert leaf entry:1872e000000 at intern:10036480000
+
+129051	node:0 ptr:4f463000000 rev_ptr:10036480000 depth:3 node_type:1 num_slot:4 partial_len:0 partial:
+129052	records[0]: partial:2f is_leaf:0 kv_len:4 child_ptr:41848000000
+129053	records[1]: partial:95 is_leaf:1 kv_len:48 child_ptr:4f46c000000
+129054	records[2]: partial:0 is_leaf:0 kv_len:0 child_ptr:0
+129055	records[3]: partial:0 is_leaf:0 kv_len:0 child_ptr:0
+
+
+
+
+484200	read node: p_ptr:4f463100000 addr:41848000000 type:0 rev_ptr:4f463100000 header: depth:4 type:0 partial_size:0  expected: depth:4
+484201	records[0]: partial:e7 is_leaf:1 kv_len:48 child_ptr:1872e000000
+484202	records[1]: partial:17 is_leaf:1 kv_len:48 child_ptr:41851000000
+484203	records[2]: partial:0 is_leaf:0 kv_len:0 child_ptr:0
+484204	records[3]: partial:0 is_leaf:0 kv_len:0 child_ptr:0
+484205	invalid node

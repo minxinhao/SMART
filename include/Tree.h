@@ -14,6 +14,8 @@
 #include <queue>
 #include <set>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 
 // #define TREE_ENABLE_WRITE_COMBINING
 // #define TREE_ENABLE_READ_DELEGATION
@@ -71,7 +73,7 @@ public:
   using WorkFunc = std::function<void (Tree *, const Request&, CoroContext *, int)>;
   void run_coroutine(GenFunc gen_func, WorkFunc work_func, int coro_cnt, Request* req = nullptr, int req_num = 0);
 
-  void insert(const Key &k, Value v, CoroContext *cxt = nullptr, int coro_id = 0, bool is_update = false, bool is_load = false);
+  void insert(const Key &k, Value v,int cnt, CoroContext *cxt = nullptr, int coro_id = 0, bool is_update = false, bool is_load = false);
   bool search(const Key &k, Value &v, CoroContext *cxt = nullptr, int coro_id = 0);
   void range_query(const Key &from, const Key &to, std::map<Key, Value> &ret);
   void statistics();
@@ -82,6 +84,7 @@ public:
 
   // 打印整个tree用于debug
   void print(CoroContext *cxt, int coro_id);
+  void print(CoroContext *cxt, int coro_id,int cnt);
 
 private:
   void coro_worker(CoroYield &yield, RequstGen *gen, WorkFunc work_func, int coro_id);
@@ -97,7 +100,7 @@ private:
                                CoroContext *cxt, int coro_id);
 
   bool read_node(InternalEntry &p, bool& type_correct, char *node_buffer, const GlobalAddress& p_ptr, int depth, bool from_cache,
-                 CoroContext *cxt, int coro_id);
+                 CoroContext *cxt, int coro_id,bool debug = false);
   bool out_of_place_write_node(const Key &k, Value &v, int depth, GlobalAddress& leaf_addr, int partial_len, uint8_t diff_partial,
                                const GlobalAddress &e_ptr, const InternalEntry &old_e, const GlobalAddress& node_addr, uint64_t *ret_buffer,
                                CoroContext *cxt, int coro_id);

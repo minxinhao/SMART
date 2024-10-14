@@ -12,6 +12,7 @@ AbstractMessageConnection::AbstractMessageConnection(
 
   createQueuePair(&message, type, send_cq, cq, &ctx);
   modifyUDtoRTS(message, &ctx);
+  printf("create message qp:%lx\n",(uint64_t)message);
 
   messagePool = hugePageAlloc(2 * messageNR * MESSAGE_SIZE);
   messageMR = createMemoryRegion((uint64_t)messagePool,
@@ -22,7 +23,7 @@ AbstractMessageConnection::AbstractMessageConnection(
 
 AbstractMessageConnection::~AbstractMessageConnection() { hugePageFree((void *)messagePool, 2 * messageNR * MESSAGE_SIZE); }
 
-void AbstractMessageConnection::initRecv() {
+void AbstractMessageConnection::initRecv(int id) {
   subNR = messageNR / kBatchCount;
 
   for (int i = 0; i < kBatchCount; ++i) {
@@ -50,8 +51,10 @@ void AbstractMessageConnection::initRecv() {
 
   struct ibv_recv_wr *bad;
   for (int i = 0; i < kBatchCount; ++i) {
-    if (ibv_post_recv(message, &recvs[i][0], &bad)) {
-      Debug::notifyError("Receive failed.");
+    printf("id:%d post recv:qp:%lx batch:%d addr:%lx\n",id,(uint64_t)message,i,recv_sgl[i][0].addr);
+    int rc = ibv_post_recv(message, &recvs[i][0], &bad);
+    if (rc) {
+      Debug::notifyError("initRecv Receive failed.%d %s",rc,strerror(rc));
     }
   }
 }
@@ -63,11 +66,9 @@ char *AbstractMessageConnection::getMessage() {
   ADD_ROUND(curMessage, messageNR);
 
   if (curMessage % subNR == 0) {
-    if (ibv_post_recv(
-            message,
-            &recvs[(curMessage / subNR - 1 + kBatchCount) % kBatchCount][0],
-            &bad)) {
-      Debug::notifyError("Receive failed.");
+    int rc = ibv_post_recv(message, &recvs[(curMessage / subNR - 1 + kBatchCount) % kBatchCount][0], &bad);
+    if (rc) {
+      Debug::notifyError("getMessage Receive failed. %d %s",rc,strerror(rc));
     }
   }
 

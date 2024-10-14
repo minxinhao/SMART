@@ -15,10 +15,16 @@ RadixCache::RadixCache(int cache_size, DSM *dsm) : cache_size(cache_size), dsm(d
 }
 
 
+// 使用k[0,p_node->depth-1]+p_node.partial作为prefix
+// 使用p_node和node_addr构建CacheEntry
+// 要将p_node加入到radix cache，首先需要到p_node的prefix取出
+// 也就是以prefix为key（连带partial），插入到ART中。
 void RadixCache::add_to_cache(const Key& k, const InternalPage* p_node, const GlobalAddress &node_addr) {
   auto depth = p_node->hdr.depth - 1;
   if (depth == 0) return;
 
+  // 理解了，这里的byte_array存放的是到这个节点为止的完整prefix
+  // 所以需要读取k的部分
   std::vector<uint8_t> byte_array(k.begin(), k.begin() + depth);
   for (int i = 0; i < (int)p_node->hdr.partial_len; ++ i) byte_array.push_back(p_node->hdr.partial[i]);
 
@@ -34,6 +40,7 @@ void RadixCache::add_to_cache(const Key& k, const InternalPage* p_node, const Gl
 }
 
 
+//  实现并发的radix tree insert
 void RadixCache::_insert(const std::vector<uint8_t>& byte_array, CacheEntry* new_entry) {
   CacheNode* parent_node = nullptr;
   CacheNode* node = cache_root;
@@ -43,15 +50,21 @@ next:
   // 1. parse header
   auto hdr = (CacheHeader *)node->header;
   for (int i = 0; i < (int)hdr->partial.size(); ++ i) {
+    // 定位到当前cache node之depth对应的prefix partial
     auto cur_partial = byte_array[hdr->depth + i];
+    // hdr->depth + i已经等于prefix最后一个，也就是prefix的key小于此cache node对应的key
+    // 或者cur_partial != 当前cache node的partial，则此node需要进行header split
     if (hdr->depth + i == (int)byte_array.size() - 1 || cur_partial != hdr->partial[i]) {
       // split
       auto partial_len = hdr->depth + i - idx;
       CacheNode* nested_node = nullptr;
+      // 创建一个新的internal node，也就是CacheNode，存放原Node的i之前的partial，然后分别指向旧CacheNode和创建存放新CacheEntry的CacheNode
       auto new_node = new CacheNode(byte_array, idx, partial_len, hdr->partial[i], node, cur_partial, new_entry, nested_node);
       auto& parent_node_entry = parent_node->records[byte_array[idx - 1]];
       auto ret_node = __sync_val_compare_and_swap(&(parent_node_entry.next), node, new_node);
       if (ret_node == node) {  // cas success
+        // 只需要修改hdr中的depth和parital，对records不需要修改
+        // 生成包含hdr中i之后的partial的new hdr
         auto new_hdr = CacheHeader::split_header(hdr, i);
         // update header
         auto ret_hdr = (CacheHeader *)__sync_val_compare_and_swap(&(node->header), hdr, new_hdr);

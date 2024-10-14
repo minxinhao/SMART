@@ -1,12 +1,19 @@
 from typing import Optional
 
+# sed 是一个强大的文本处理工具，常用于替换文件中的特定文本。这里的 sed 命令通过正则表达式查找并替换 C++ 配置文件中的某些定义。
+# sed -i 's/old_text/new_text/g' filename
+# -i：表示直接修改文件，而不是输出到终端。
+# •	s/old_text/new_text/：这是最常用的替换命令，表示将匹配的 old_text 替换为 new_text。
+# •	g：表示全局替换，即替换文件中所有匹配的部分，而不只是第一处匹配。
 
+
+# 修改配置文件中key长度的函数
 def sed_key_len(config_path: str, key_size: int):
-    old_key_code   = "^constexpr uint32_t keyLen = .*"
-    new_key_code   = f"constexpr uint32_t keyLen = {key_size};"
-    return f"sed -i 's/{old_key_code}/{new_key_code}/g' {config_path}"
+    old_key_code   = "^constexpr uint32_t keyLen = .*" # 匹配旧的key长度代码，使用正则表达式匹配
+    new_key_code   = f"constexpr uint32_t keyLen = {key_size};" # 根据key_size生成新的key长度代码
+    return f"sed -i 's/{old_key_code}/{new_key_code}/g' {config_path}" # 使用sed命令替换配置文件中的key长度
 
-
+# 修改配置文件中value长度的函数
 def sed_val_len(config_path: str, value_size: int):
     old_val_code   = "^constexpr uint32_t simulatedValLen =.*"
     new_val_code   = f"constexpr uint32_t simulatedValLen = {value_size};"

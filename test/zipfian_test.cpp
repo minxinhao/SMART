@@ -136,7 +136,7 @@ void work_func(Tree *tree, const Request& r, CoroContext *ctx, int coro_id) {
     Value v;
     tree->search(r.k, v, ctx, coro_id);
   } else {
-    tree->insert(r.k, r.v, ctx, coro_id, !test_insert);
+    tree->insert(r.k, r.v,0, ctx, coro_id, !test_insert);
   }
 }
 
@@ -155,7 +155,7 @@ void thread_load(int id) {
   uint64_t end_warm_key = kWarmRatio * kKeySpace;
   for (uint64_t i = 1; i < end_warm_key; ++i) {
     if (i % all_loader_thread == loader_id) {
-      tree->insert(to_key(i), i * 2, nullptr, 0, false, true);
+      tree->insert(to_key(i), i * 2,i, nullptr, 0, false, true);
     }
   }
   printf("loader %lu load finish\n", loader_id);

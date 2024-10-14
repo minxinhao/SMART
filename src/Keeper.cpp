@@ -76,9 +76,14 @@ void Keeper::serverEnter() {
       std::string ip(getIP());
 #ifdef STATIC_ID_FROM_IP
       myNodeID = std::atoi(ip.substr(ip.find_last_of('.') + 1).c_str()) - 1;
+      printf("IP:%s IP-id:%s\n",ip.c_str(),ip.substr(ip.find_last_of('.') + 1).c_str());
 #else
       myNodeID = serverNum - 1;
 #endif
+      // 这里根据IP计算的ID正确吗？
+      // 从我的理解不正确。
+      // 在connectNode中，会遍历0～maxServer的id，set myNodeID-id和get id-myNodeID
+      // 和这里计算出的ID明显不一样，依赖于最后一个IP从0开始顺序变化
       Debug::notifyInfo("Compute server %d start up [%s]\n", myNodeID, ip.c_str());
       return;
     }
@@ -93,7 +98,7 @@ void Keeper::serverConnect() {
   size_t l;
   uint32_t flags;
   memcached_return rc;
-
+  
   while (curServer < maxServer) {
     char *serverNumStr = memcached_get(memc, SERVER_NUM_KEY,
                                        strlen(SERVER_NUM_KEY), &l, &flags, &rc);
@@ -103,7 +108,7 @@ void Keeper::serverConnect() {
       continue;
     }
     uint32_t serverNum = atoi(serverNumStr);
-    printf("serverNum:%d\n",serverNum);
+    printf("serverNum:%d maxServer:%d curServer:%d\n",serverNum,maxServer,curServer);
     free(serverNumStr);
 
     // /connect server K
@@ -140,6 +145,11 @@ char *Keeper::memGet(const char *key, uint32_t klen, size_t *v_size) {
   while (true) {
 
     res = memcached_get(memc, key, klen, &l, &flags, &rc);
+    printf("get key:%s status:%s\n",key,rc==MEMCACHED_SUCCESS?"success":"fail");
+    if (rc != MEMCACHED_SUCCESS) {
+      std::cerr << "Error retrieving key: " << key << " with error: " 
+                << memcached_strerror(memc, rc) << std::endl;
+    }
     if (rc == MEMCACHED_SUCCESS) {
       break;
     }

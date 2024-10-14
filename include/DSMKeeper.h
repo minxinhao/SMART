@@ -74,14 +74,21 @@ public:
             uint32_t maxServer = 12)
       : Keeper(maxServer), thCon(thCon), dirCon(dirCon),
         remoteCon(remoteCon) {
+    printf("initLocalMeta\n");
     initLocalMeta();
+    printf("connectMemcached\n");
     if (!connectMemcached()) {
       return;
     }
+    printf("serverEnter\n");
     serverEnter();
+    printf("serverConnect\n");
     serverConnect();
+    printf("connectMySelf\n");
     connectMySelf();
+    printf("initRouteRule\n");
     initRouteRule();
+    printf("dsm keeper init\n");
   }
 
   ~DSMKeeper() { disconnectMemcached(); }

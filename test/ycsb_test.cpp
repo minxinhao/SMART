@@ -144,7 +144,7 @@ void work_func(Tree *tree, const Request& r, CoroContext *ctx, int coro_id) {
     tree->search(r.k, v, ctx, coro_id);
   }
   else if (r.is_update || r.is_insert) {
-    tree->insert(r.k, r.v, ctx, coro_id, r.is_update);
+    tree->insert(r.k, r.v,0, ctx, coro_id, r.is_update);
   }
   else {
     std::map<Key, Value> ret;
@@ -179,7 +179,7 @@ void thread_load(int id) {
     while (load_in >> op >> int_k) {
       k = int2key(int_k);
       assert(op == "INSERT");
-      tree->insert(k, randval(e), nullptr, 0, false, true);
+      tree->insert(k, loader_id, cnt, nullptr, 0, false, true);
       if (++ cnt % LOAD_HEARTBEAT == 0) {
         printf("thread %lu: %d load entries loaded.\n", loader_id, cnt);
       }
@@ -194,7 +194,7 @@ void thread_load(int id) {
       tmp >> op >> str_k;
       k = str2key(str_k);
       assert(op == "INSERT");
-      tree->insert(k, randval(e), nullptr, 0, false, true);
+      tree->insert(k, randval(e),cnt, nullptr, 0, false, true);
       if (++ cnt % LOAD_HEARTBEAT == 0) {
         printf("thread %lu: %d load entries loaded.\n", loader_id, cnt);
       }
@@ -208,20 +208,22 @@ void thread_run(int id) {
   // bind to CPUs in NUMA that close to mlx5_2
   // 在我们的服务器上只有mlx5_1,且thread直接使用0-20
   bindCore(id + 1);  
-
+  printf("thread:%d ",id);
   dsm->registerThread();
   uint64_t my_id = kThreadCount * dsm->getMyNodeID() + id;
 
-  printf("I am %lu\n", my_id);
+  printf("I am %lu with id:%d thread_id:%d thread_tag:%ld\n", my_id,id,dsm->getMyThreadID(),dsm->getThreadTag());
 
   if (id == 0) {
     bench_timer.begin();
   }
 
   // 1. insert ycsb_load
+  printf("thread:%d thread_id:%d thread_tag:%ld start load\n",id,dsm->getMyThreadID(),dsm->getThreadTag());
   if (id < std::min(kThreadCount, LOADER_NUM)) {
     thread_load(id);
   }
+  printf("thread:%d thread_id:%d thread_tag:%ld load end\n",id,dsm->getMyThreadID(),dsm->getThreadTag());
 
   // 2. load ycsb_trans
   Request* req = new Request[MAX_THREAD_REQUEST];
@@ -328,6 +330,7 @@ void thread_run(int id) {
   printf("thread %d exit.\n", id);
 }
 
+// 读取kNodeCount kThreadCount kCoroCnt等参数，读取ycsb load和txn文件
 void parse_args(int argc, char *argv[]) {
   if (argc != 6 && argc != 7) {
     printf("Usage: ./ycsb_test kNodeCount kThreadCount kCoroCnt workload_type[randint/email] workload_idx[a/b/c/d/e] [fix_range_size/rm_write_conflict]\n");
@@ -403,7 +406,7 @@ int main(int argc, char *argv[]) {
   }
   printf("dsm init end\n");
 
-  dsm->registerThread();
+  dsm->registerThread(); 
   tree = new Tree(dsm);
   dsm->barrier("benchmark");
 

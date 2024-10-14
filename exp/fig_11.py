@@ -14,7 +14,8 @@ input_path = './params'
 style_path = "./styles"
 output_path = './results'
 fig_num = '11'
-small_fig_num = {'YCSB LOAD': 'a', 'YCSB A': 'b', 'YCSB B': 'c', 'YCSB C': 'd', 'YCSB D': 'e'}
+small_fig_num = {'YCSB LOAD': 'a'}
+print("hello")
 
 # common params
 with (Path(input_path) / f'common.json').open(mode='r') as f:
@@ -58,10 +59,11 @@ def main(cmd: CMDManager, tp: LogParser):
             if workload != 'YCSB LOAD':
                 cmake_option = cmake_option.replace('-DLONG_TEST_EPOCH=off', '-DLONG_TEST_EPOCH=on')
             BUILD_PROJECT = f"cd {project_dir} && {sed_cmd} && mkdir -p build && cd build && cmake {cmake_option} .. && make clean && make -j"
-
             cmd.all_execute(BUILD_PROJECT)
-
+            
+            print(CN_and_client_nums)
             for CN_num, client_num_per_CN in CN_and_client_nums[method][workload]:
+                print(CN_num,client_num_per_CN)
                 CLEAR_MEMC = f"{env_cmd} && /bin/bash ../script/restartMemc.sh"
                 SPLIT_WORKLOADS = f"{env_cmd} && python3 {ycsb_dir}/split_workload.py {workload_name} {key_type} {CN_num} {client_num_per_CN}"
                 YCSB_TEST = f"{env_cmd} && ./ycsb_test {CN_num} {client_num_per_CN} 2 {key_type} {workload_name}"
@@ -89,7 +91,10 @@ def main(cmd: CMDManager, tp: LogParser):
 
 
 if __name__ == '__main__':
+    print(cluster_ips)
+    print(master_ip)
     cmd = CMDManager(cluster_ips, master_ip)
+    print("CMD init end")
     tp = LogParser()
     t = main(cmd, tp)
     with (Path(output_path) / 'time.log').open(mode="a+") as f:

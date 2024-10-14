@@ -309,7 +309,10 @@ public:
   //   std::fill(records + num_record, records + 256, InternalEntry::Null());
   // }
 
-  bool is_valid(const GlobalAddress& p_ptr, int depth, bool from_cache) const { return hdr.type() != NODE_DELETED && hdr.depth <= depth && (!from_cache || p_ptr == rev_ptr); }
+  bool is_valid(const GlobalAddress& p_ptr, int depth, bool from_cache) const { 
+    // printf("hdr:type:%d depth:%d rev_ptr:%lx expected: depth:%d p_ptr::%ld\n",hdr.type(),hdr.depth,(uint64_t)rev_ptr,depth,(uint64_t)p_ptr);
+    return hdr.type() != NODE_DELETED && hdr.depth <= depth && (!from_cache || p_ptr == rev_ptr); 
+  }
 } __attribute__((packed));
 
 
